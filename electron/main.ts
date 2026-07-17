@@ -1,10 +1,10 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import path from 'path'
 import { createFloatingBall } from './floating-ball'
+import { createTray, destroyTray } from './tray'
 import { startPythonBackend, stopPythonBackend, getBackendUrl } from './python-bridge'
 
 let mainWindow: BrowserWindow | null = null
-let tray: Tray | null = null
 let floatingBallWindow: BrowserWindow | null = null
 let isQuitting = false
 
@@ -47,56 +47,7 @@ function createMainWindow(): BrowserWindow {
   return win
 }
 
-// 创建系统托盘
-function createTray(): Tray {
-  const trayIcon = nativeImage.createFromPath(
-    path.join(__dirname, '../assets/tray-icon.png')
-  )
-  const trayObj = new Tray(trayIcon.resize({ width: 16, height: 16 }))
-  trayObj.setToolTip('Memo - 会议纪要')
 
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: '显示主窗口',
-      click: () => {
-        mainWindow?.show()
-        mainWindow?.focus()
-      },
-    },
-    {
-      label: '开始录制',
-      click: () => {
-        mainWindow?.webContents.send('tray:start-recording')
-      },
-    },
-    { type: 'separator' },
-    {
-      label: '最近会议',
-      click: () => {
-        mainWindow?.show()
-        mainWindow?.focus()
-      },
-    },
-    { type: 'separator' },
-    {
-      label: '退出',
-      click: () => {
-        isQuitting = true
-        app.quit()
-      },
-    },
-  ])
-
-  trayObj.setContextMenu(contextMenu)
-
-  // 双击托盘图标显示主窗口
-  trayObj.on('double-click', () => {
-    mainWindow?.show()
-    mainWindow?.focus()
-  })
-
-  return trayObj
-}
 
 // IPC 处理
 function registerIpcHandlers(): void {
@@ -118,6 +69,8 @@ function registerIpcHandlers(): void {
     mainWindow?.show()
     mainWindow?.focus()
   })
+
+
 }
 
 // 应用启动
@@ -135,7 +88,10 @@ app.whenReady().then(async () => {
   mainWindow = createMainWindow()
 
   // 创建系统托盘
-  tray = createTray()
+  createTray(mainWindow, () => {
+    isQuitting = true
+    app.quit()
+  })
 
   // 创建悬浮球
   floatingBallWindow = createFloatingBall(mainWindow)
@@ -161,5 +117,6 @@ app.on('window-all-closed', () => {
 // 应用退出前清理
 app.on('before-quit', async () => {
   isQuitting = true
+  destroyTray()
   await stopPythonBackend()
 })
