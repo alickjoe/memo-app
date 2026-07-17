@@ -1,53 +1,50 @@
-﻿# Memo App - One-click dev environment launcher
-# Usage: .\dev.ps1 [-SkipConda] [-BackendOnly] [-FrontendOnly]
+﻿# Memo App - One-click dev environment launcher (venv)
+# Usage: .\dev.ps1 [-BackendOnly] [-FrontendOnly]
 param(
-    [switch]$SkipConda,
     [switch]$BackendOnly,
     [switch]$FrontendOnly
 )
 
 $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$condaBase = "$env:USERPROFILE\AppData\Local\miniconda3"
+$venvPython = "$root\.venv\Scripts\python.exe"
 
-# ========== 1. Detect Python ==========
-$pythonPath = $null
-if (-not $SkipConda) {
-    # Prefer conda memo-env (check Scripts/python.exe for venv style)
-    foreach ($candidate in @(
-        "$condaBase\envs\memo-env\Scripts\python.exe",
-        "$condaBase\envs\memo-env\python.exe"
-    )) {
-        if (Test-Path $candidate) {
-            $pythonPath = $candidate
-            Write-Host "[OK]  Conda env Python" -ForegroundColor Green
-            Write-Host "      $(& $pythonPath --version)" -ForegroundColor DarkGray
-            break
-        }
+# ========== 1. Ensure venv exists ==========
+if (-not (Test-Path $venvPython)) {
+    Write-Host "[...] Creating Python venv..." -ForegroundColor Yellow
+    $systemPython = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if (-not $systemPython) {
+        Write-Error "Python not found. Please install Python 3.11+ and add to PATH."
+        exit 1
     }
+    & $systemPython -m venv "$root\.venv" 2>&1
+    if (-not (Test-Path $venvPython)) {
+        Write-Error "Failed to create venv."
+        exit 1
+    }
+    Write-Host "[OK]  Venv created" -ForegroundColor Green
 }
 
-if (-not $pythonPath) {
-    $pythonPath = (Get-Command python -ErrorAction SilentlyContinue).Source
-}
-if (-not $pythonPath) {
-    Write-Error "Python not found. Install Miniconda or Python 3.11+"
-    exit 1
-}
-
-# ========== 2. Check/Install deps ==========
-$sitePkgs = Split-Path -Parent (Split-Path -Parent $pythonPath)
-$sitePkgs = Join-Path $sitePkgs "Lib\site-packages"
+# ========== 2. Install/verify dependencies ==========
+$sitePkgs = "$root\.venv\Lib\site-packages"
 if (-not (Test-Path (Join-Path $sitePkgs "fastapi"))) {
     Write-Host "[...] Installing Python dependencies..." -ForegroundColor Yellow
-    & $pythonPath -m pip install -r "$root\backend\requirements.txt" -q 2>&1
+    & $venvPython -m pip install -r "$root\backend\requirements.txt" -q 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to install dependencies. Check network and try again."
+        exit 1
+    }
     Write-Host "[OK]  Dependencies installed" -ForegroundColor Green
+} else {
+    Write-Host "[OK]  Dependencies already installed" -ForegroundColor Green
 }
+
+Write-Host "[OK]  Python: $(& $venvPython --version)" -ForegroundColor DarkGray
 
 # ========== 3. Start Backend ==========
 if (-not $FrontendOnly) {
     Write-Host "[...] Starting Python backend (http://127.0.0.1:8765)" -ForegroundColor Cyan
-    $backendJob = Start-Process -FilePath $pythonPath -ArgumentList "$root\backend\main.py" -NoNewWindow -PassThru
+    Start-Process -FilePath $venvPython -ArgumentList "$root\backend\main.py" -NoNewWindow
     Start-Sleep -Seconds 2
 }
 

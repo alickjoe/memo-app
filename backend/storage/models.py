@@ -39,9 +39,8 @@ class Minutes:
 
 @dataclass
 class AppSettings:
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.openai.com/v1"
+    api_key: str = ""
+    api_base_url: str = "https://api.openai.com/v1"
     stt_model: str = "whisper-1"
     stt_language: str = "zh"
     llm_model: str = "gpt-4o-mini"
-    deepseek_api_key: str = ""

@@ -8,6 +8,10 @@ import asyncio
 from typing import Optional
 
 import httpx
+import urllib3
+
+# 禁用 SSL 验证警告（企业网络环境）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger("memo.llm")
 
@@ -47,8 +51,8 @@ class LLMSummarizer:
         rows = await cursor.fetchall()
         settings = {row[0]: row[1] for row in rows}
 
-        self.api_key = settings.get("openai_api_key", os.environ.get("OPENAI_API_KEY", ""))
-        self.base_url = settings.get("openai_base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+        self.api_key = settings.get("api_key", os.environ.get("MEMO_API_KEY", ""))
+        self.base_url = settings.get("api_base_url", os.environ.get("MEMO_API_BASE_URL", "https://api.openai.com/v1"))
         self.model = settings.get("llm_model", "gpt-4o-mini")
 
     async def _ensure_config(self):
@@ -77,7 +81,7 @@ class LLMSummarizer:
 
     async def _call_llm(self, text: str) -> dict:
         """调用 LLM API"""
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
                 headers={
@@ -151,7 +155,7 @@ class LLMSummarizer:
     async def _call_llm_for_chunk(self, prompt: str) -> Optional[str]:
         """针对单个片段调用 LLM"""
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
                     headers={

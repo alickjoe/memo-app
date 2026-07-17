@@ -8,6 +8,10 @@ import asyncio
 from typing import Optional
 
 import httpx
+import urllib3
+
+# 禁用 SSL 验证警告（企业网络环境）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger("memo.stt")
 
@@ -31,8 +35,8 @@ class STTEngine:
         rows = await cursor.fetchall()
         settings = {row[0]: row[1] for row in rows}
 
-        self.api_key = settings.get("openai_api_key", os.environ.get("OPENAI_API_KEY", ""))
-        self.base_url = settings.get("openai_base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+        self.api_key = settings.get("api_key", os.environ.get("MEMO_API_KEY", ""))
+        self.base_url = settings.get("api_base_url", os.environ.get("MEMO_API_BASE_URL", "https://api.openai.com/v1"))
         self.model = settings.get("stt_model", "whisper-1")
         self.language = settings.get("stt_language", "zh")
 
@@ -65,7 +69,7 @@ class STTEngine:
             wav_buffer.seek(0)
 
             # 调用 OpenAI Whisper API
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
                 response = await client.post(
                     f"{self.base_url}/audio/transcriptions",
                     headers={"Authorization": f"Bearer {self.api_key}"},
@@ -73,7 +77,7 @@ class STTEngine:
                     data={
                         "model": self.model,
                         "language": self.language,
-                        "response_format": "text",
+                        "response_format": "json",
                     },
                 )
 
@@ -83,7 +87,8 @@ class STTEngine:
                     duration_minutes = len(audio_bytes) / (16000 * 2 * 60)
                     self.estimated_cost += duration_minutes * 0.006
 
-                    text = response.text.strip()
+                    result = response.json()
+                    text = result.get("text", "").strip()
                     if text:
                         logger.debug(f"Transcribed: {text[:80]}...")
                         return text

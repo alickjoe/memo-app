@@ -1,7 +1,6 @@
-import { spawn, ChildProcess, execSync } from 'child_process'
+import { spawn, ChildProcess } from 'child_process'
 import path from 'path'
 import fs from 'fs'
-import os from 'os'
 import { app } from 'electron'
 import http from 'http'
 
@@ -26,21 +25,15 @@ function findFreePort(): Promise<number> {
   })
 }
 
-// 自动检测 Python 路径：conda env > 系统 Python
+// 自动检测 Python 路径：项目 venv > system PATH
 function findPythonPath(): string {
-  // 1. 检查 conda memo-env 环境（venv 风格: Scripts/python.exe）
-  const condaBase = process.env.CONDA_PREFIX
-    || path.join(os.homedir(), 'AppData', 'Local', 'miniconda3')
-  const candidates = [
-    path.join(condaBase, 'envs', 'memo-env', 'Scripts', 'python.exe'),  // venv 风格
-    path.join(condaBase, 'envs', 'memo-env', 'python.exe'),              // conda 原生
-    path.join(condaBase, 'python.exe'),                                   // conda base
-  ]
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      console.log(`[Python Bridge] Using: ${candidate}`)
-      return candidate
-    }
+  const projectRoot = path.join(__dirname, '..')
+
+  // 1. 优先: 项目本地 venv
+  const localVenv = path.join(projectRoot, '.venv', 'Scripts', 'python.exe')
+  if (fs.existsSync(localVenv)) {
+    console.log(`[Python Bridge] Using project .venv: ${localVenv}`)
+    return localVenv
   }
 
   // 2. 回退: 系统 PATH 中的 python

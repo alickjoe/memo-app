@@ -353,7 +353,7 @@ async def process_audio_pipeline(meeting_id: str):
     logger.info(f"Starting audio pipeline for meeting {meeting_id}")
 
     db = await get_db()
-    speech_buffer = b""
+    speech_buffer = bytearray()
     audio_offset = 0.0
     speaker_idx = 0
 
@@ -406,9 +406,7 @@ async def process_audio_pipeline(meeting_id: str):
                         except Exception:
                             pass
 
-                speech_buffer = b""
-                del speech_buffer
-                speech_buffer = b""
+                speech_buffer = bytearray()
 
             audio_offset += len(audio_chunk) / 16000.0
 

@@ -1,12 +1,11 @@
 import { create } from 'zustand'
 
 interface AppSettings {
-  openai_api_key: string
-  openai_base_url: string
+  api_key: string
+  api_base_url: string
   stt_model: string
   stt_language: string
   llm_model: string
-  deepseek_api_key: string
 }
 
 interface SettingsState {
@@ -18,12 +17,11 @@ interface SettingsState {
 }
 
 const defaultSettings: AppSettings = {
-  openai_api_key: '',
-  openai_base_url: 'https://api.openai.com/v1',
+  api_key: '',
+  api_base_url: 'https://api.openai.com/v1',
   stt_model: 'whisper-1',
   stt_language: 'zh',
   llm_model: 'gpt-4o-mini',
-  deepseek_api_key: '',
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

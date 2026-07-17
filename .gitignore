@@ -1,4 +1,4 @@
-# === 依赖目录 ===
+# === 依赖目录 (Python venv) ===
 node_modules/
 __pycache__/
 *.pyc
@@ -9,6 +9,7 @@ env/
 
 # === 构建产物 ===
 dist/
+dist-electron/
 out/
 release/
 *.exe
@@ -50,10 +51,6 @@ npm-debug.log*
 
 # === Electron ===
 electron-builder.yml.local
-
-# === Conda ===
-conda-env/
-*.conda
 
 # === Python ===
 *.egg-info/
