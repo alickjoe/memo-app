@@ -51,6 +51,10 @@ npm-debug.log*
 # === Electron ===
 electron-builder.yml.local
 
+# === Conda ===
+conda-env/
+*.conda
+
 # === Python ===
 *.egg-info/
 *.egg

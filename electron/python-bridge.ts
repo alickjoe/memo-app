@@ -1,5 +1,7 @@
 import { spawn, ChildProcess, execSync } from 'child_process'
 import path from 'path'
+import fs from 'fs'
+import os from 'os'
 import { app } from 'electron'
 import http from 'http'
 
@@ -24,16 +26,39 @@ function findFreePort(): Promise<number> {
   })
 }
 
+// 自动检测 Python 路径：conda env > 系统 Python
+function findPythonPath(): string {
+  // 1. 检查 conda memo-env 环境（venv 风格: Scripts/python.exe）
+  const condaBase = process.env.CONDA_PREFIX
+    || path.join(os.homedir(), 'AppData', 'Local', 'miniconda3')
+  const candidates = [
+    path.join(condaBase, 'envs', 'memo-env', 'Scripts', 'python.exe'),  // venv 风格
+    path.join(condaBase, 'envs', 'memo-env', 'python.exe'),              // conda 原生
+    path.join(condaBase, 'python.exe'),                                   // conda base
+  ]
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      console.log(`[Python Bridge] Using: ${candidate}`)
+      return candidate
+    }
+  }
+
+  // 2. 回退: 系统 PATH 中的 python
+  console.log('[Python Bridge] Using system python from PATH')
+  return 'python'
+}
+
 // 获取 Python 后端可执行文件路径
-function getBackendExePath(): string {
+function getPythonCommand(): { cmd: string; args: string[] } {
   const isDev = !app.isPackaged
 
   if (isDev) {
-    // 开发环境：直接使用 python 运行
-    return 'python'
+    const entryPath = getBackendEntryPath()
+    const pythonPath = findPythonPath()
+    return { cmd: pythonPath, args: [entryPath] }
   } else {
     // 生产环境：使用打包后的 backend.exe
-    return path.join(process.resourcesPath, 'backend', 'backend.exe')
+    return { cmd: path.join(process.resourcesPath, 'backend', 'backend.exe'), args: [] }
   }
 }
 
@@ -74,29 +99,16 @@ export async function startPythonBackend(): Promise<string> {
   backendPort = await findFreePort()
   backendUrl = `http://127.0.0.1:${backendPort}`
 
-  const isDev = !app.isPackaged
+  const { cmd, args } = getPythonCommand()
+  console.log(`[Python Bridge] Starting: ${cmd} ${args.join(' ')}`)
 
-  if (isDev) {
-    // 开发环境：spawn python 进程
-    const entryPath = getBackendEntryPath()
-    pythonProcess = spawn('python', [entryPath], {
-      env: {
-        ...process.env,
-        BACKEND_PORT: String(backendPort),
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-  } else {
-    // 生产环境：spawn backend.exe
-    const exePath = getBackendExePath()
-    pythonProcess = spawn(exePath, [], {
-      env: {
-        ...process.env,
-        BACKEND_PORT: String(backendPort),
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-  }
+  pythonProcess = spawn(cmd, args, {
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(backendPort),
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
 
   pythonProcess.stdout?.on('data', (data: Buffer) => {
     console.log(`[Python Backend] ${data.toString().trim()}`)

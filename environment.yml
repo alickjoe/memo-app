@@ -1,0 +1,29 @@
+# Memo Backend - Conda Environment
+# 创建环境: conda env create -f environment.yml
+# 更新环境: conda env update -f environment.yml --prune
+# 激活环境: conda activate memo-env
+#
+# 注意: 如果 conda 无法连接仓库（企业网络限制），可使用备选方案：
+#   1. conda create -n memo-env --clone base
+#   2. conda activate memo-env
+#   3. pip install -r backend/requirements.txt
+
+name: memo-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.11
+  - pip
+  # numpy 由 conda 安装以获得更好的性能（MKL 加速）
+  # 如果 conda 仓库不可用，会从 pip 回退安装
+  - numpy>=1.26.0
+  - pip:
+    - fastapi>=0.112.0
+    - uvicorn[standard]>=0.30.0
+    - soundcard>=0.4.3
+    - httpx>=0.27.0
+    - aiosqlite>=0.20.0
+    - pyinstaller>=6.0.0
+    # 可选: VAD 说话人检测 (解除注释启用)
+    # - torch>=2.0.0

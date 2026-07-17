@@ -34,6 +34,8 @@
 
 ### 开发
 
+**推荐：使用 Miniconda 管理 Python 环境**
+
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/your-username/memo-app.git
@@ -42,14 +44,31 @@ cd memo-app
 # 2. 安装前端依赖
 npm install
 
-# 3. 安装 Python 依赖
-pip install -r backend/requirements.txt
+# 3. 创建 conda 虚拟环境并安装依赖
+conda env create -f environment.yml
 
-# 4. 配置 API Key
+# 4. 激活环境
+conda activate memo-env
+
+# 5. 配置 API Key
 copy .env.example .env
 # 编辑 .env，填入 OPENAI_API_KEY
 
-# 5. 启动开发环境
+# 6. 一键启动（自动激活 conda + 启动前后端）
+.\dev.ps1
+
+# 或者分别启动：
+.\activate-env.ps1          # 激活 conda 环境
+python backend/main.py       # 启动后端
+npm run dev                  # 启动前端 (新终端)
+```
+
+**备选：使用系统 Python + venv**
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r backend/requirements.txt
 npm run dev
 ```
 
