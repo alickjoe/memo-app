@@ -1,0 +1,64 @@
+# === 依赖目录 ===
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# === 构建产物 ===
+dist/
+out/
+release/
+*.exe
+*.msi
+*.dmg
+*.pkg
+build/backend-dist/
+
+# === 环境配置（含 API Key）===
+.env
+.env.local
+.env.*.local
+*.env
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === 操作系统 ===
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# === 运行时数据 ===
+*.db
+*.sqlite
+*.sqlite3
+recordings/
+data/
+
+# === 日志 ===
+*.log
+logs/
+npm-debug.log*
+
+# === Electron ===
+electron-builder.yml.local
+
+# === Python ===
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# === 临时文件 ===
+tmp/
+temp/
+*.tmp

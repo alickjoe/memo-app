@@ -1,0 +1,48 @@
+appId: com.memo.minutes
+productName: Memo
+copyright: Copyright 2026 Memo Team
+artifactName: Memo-Setup-${version}.${ext}
+
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+
+extraResources:
+  - from: backend-dist/
+    to: backend/
+    filter:
+      - "**/*"
+
+asar: true
+asarUnpack:
+  - "**/*.node"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/icon.ico
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  installerHeaderIcon: assets/icon.ico
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Memo
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true
+
+publish:
+  provider: github
+  owner: your-github-username
+  repo: memo-app

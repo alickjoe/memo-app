@@ -1,0 +1,47 @@
+"""
+数据模型定义
+"""
+from dataclasses import dataclass, field
+from typing import Optional
+from datetime import datetime
+
+
+@dataclass
+class Meeting:
+    id: str
+    title: str = "未命名会议"
+    audio_path: Optional[str] = None
+    duration_seconds: int = 0
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    status: str = "recording"  # recording / processing / done / error
+
+
+@dataclass
+class TranscriptSegment:
+    meeting_id: str
+    speaker: str = "Speaker A"
+    start_time: float = 0.0
+    end_time: float = 0.0
+    text: str = ""
+    id: Optional[int] = None
+
+
+@dataclass
+class Minutes:
+    meeting_id: str
+    summary: str = ""
+    key_points: list[str] = field(default_factory=list)
+    action_items: list[str] = field(default_factory=list)
+    next_steps: str = ""
+    raw_response: str = ""
+    generated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+
+@dataclass
+class AppSettings:
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    stt_model: str = "whisper-1"
+    stt_language: str = "zh"
+    llm_model: str = "gpt-4o-mini"
+    deepseek_api_key: str = ""

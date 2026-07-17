@@ -1,0 +1,22 @@
+# Memo Backend Dependencies
+# Install: pip install -r requirements.txt
+
+# Web Framework
+fastapi>=0.112.0
+uvicorn[standard]>=0.30.0
+
+# Audio Capture (Windows)
+soundcard>=0.4.3
+numpy>=1.26.0
+
+# HTTP Client (for STT & LLM APIs)
+httpx>=0.27.0
+
+# Database
+aiosqlite>=0.20.0
+
+# VAD (optional, falls back to energy-based)
+# torch>=2.0.0
+
+# Build
+pyinstaller>=6.0.0
