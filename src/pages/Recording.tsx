@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 interface TranscriptSegment {
   speaker: string
@@ -11,6 +12,7 @@ interface TranscriptSegment {
 export default function Recording() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { t } = useTranslation()
   const [duration, setDuration] = useState(0)
   const [isPaused, setIsPaused] = useState(false)
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([])
@@ -90,7 +92,7 @@ export default function Recording() {
           <div className="flex items-center gap-2">
             <span className={`w-2.5 h-2.5 rounded-full ${isPaused ? 'bg-yellow-400' : 'bg-red-500 animate-pulse'}`} />
             <span className="text-sm font-medium text-gray-700">
-              {isPaused ? '已暂停' : '录制中'}
+              {isPaused ? t('recording.paused') : t('recording.recording')}
             </span>
           </div>
           <span className="text-lg font-mono text-gray-900 tabular-nums">
@@ -102,13 +104,13 @@ export default function Recording() {
             onClick={handlePause}
             className="px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50"
           >
-            {isPaused ? '继续' : '暂停'}
+            {isPaused ? t('recording.resume') : t('recording.pause')}
           </button>
           <button
             onClick={handleStop}
             className="px-4 py-1.5 text-sm bg-red-500 text-white rounded-md hover:bg-red-600"
           >
-            结束录制
+            {t('recording.stopRecording')}
           </button>
         </div>
       </div>
@@ -117,7 +119,7 @@ export default function Recording() {
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {transcripts.length === 0 ? (
           <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-            等待语音输入...
+            {t('recording.waitingAudio')}
           </div>
         ) : (
           <div className="space-y-3 max-w-2xl mx-auto">

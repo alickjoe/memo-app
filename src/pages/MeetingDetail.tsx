@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import MinutesPanel from '../components/MinutesPanel'
 import TranscriptStream from '../components/TranscriptStream'
 import { useSettingsStore } from '../stores/settings'
@@ -28,81 +29,11 @@ interface TranscriptSegment {
   version?: number
 }
 
-const ZH = {
-  summary: '总结',
-  transcript: '转写记录',
-  regenerate: '重新生成',
-  retranscribe: '重新转写',
-  retranscribing: '转写中...',
-  exportMd: '导出 Markdown',
-  exportTxt: '导出 TXT',
-  delete: '删除',
-  untitled: '未命名会议',
-  loading: '加载中...',
-  generating: '正在生成会议纪要...',
-  retranscribingStatus: '正在重新转写...',
-  retranscribeDone: '重新转写完成！',
-  retranscribeFailed: '重新转写失败',
-  retranscribeNoAudio: '此会议没有关联的音频文件，无法重新转写',
-  noMinutes: '暂无纪要内容',
-  waitingTranscript: '等待转写内容...',
-  noTranscript: '暂无转写记录',
-  confirmDelete: '确定要删除此会议吗？相关录音和纪要将被永久删除。',
-  confirmRetranscribe: '将使用完整音频重新转写。短音频整段转写，长音频滑动窗口分段。旧转写记录保留不丢失。',
-  durationMin: '分',
-  durationSec: '秒',
-  date: '日期',
-  durationLabel: '时长',
-  exportSummary: '摘要',
-  exportKeyPoints: '关键讨论点',
-  exportActionItems: '行动项',
-  exportNextSteps: '下一步',
-  exportTranscript: '转写记录',
-  exportTitle: '会议纪要',
-  version: '版本',
-  versionOriginal: '原始',
-}
-
-const EN: typeof ZH = {
-  summary: 'Summary',
-  transcript: 'Transcript',
-  regenerate: 'Regenerate',
-  retranscribe: 'Re-transcribe',
-  retranscribing: 'Transcribing...',
-  exportMd: 'Export Markdown',
-  exportTxt: 'Export TXT',
-  delete: 'Delete',
-  untitled: 'Untitled Meeting',
-  loading: 'Loading...',
-  generating: 'Generating meeting minutes...',
-  retranscribingStatus: 'Re-transcribing...',
-  retranscribeDone: 'Re-transcription complete!',
-  retranscribeFailed: 'Re-transcription failed',
-  retranscribeNoAudio: 'No audio file associated with this meeting',
-  noMinutes: 'No minutes yet',
-  waitingTranscript: 'Waiting for transcript...',
-  noTranscript: 'No transcript yet',
-  confirmDelete: 'Are you sure you want to delete this meeting? All related recordings and minutes will be permanently deleted.',
-  confirmRetranscribe: 'This will re-transcribe the full audio file. Short audio uses whole-file mode, long audio uses sliding window. Existing transcripts are preserved.',
-  durationMin: 'min',
-  durationSec: 's',
-  date: 'Date',
-  durationLabel: 'Duration',
-  exportSummary: 'Summary',
-  exportKeyPoints: 'Key Discussion Points',
-  exportActionItems: 'Action Items',
-  exportNextSteps: 'Next Steps',
-  exportTranscript: 'Transcript',
-  exportTitle: 'Meeting Minutes',
-  version: 'Version',
-  versionOriginal: 'Original',
-}
-
 export default function MeetingDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const language = useSettingsStore((s) => s.settings.llm_output_language) || 'en'
-  const t = language === 'zh' ? ZH : EN
+  const { t } = useTranslation()
+  const uiLanguage = useSettingsStore((s) => s.settings.ui_language) || 'en'
   const [meeting, setMeeting] = useState<Meeting | null>(null)
   const [minutes, setMinutes] = useState<Minutes | null>(null)
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([])
@@ -117,8 +48,8 @@ export default function MeetingDetail() {
   const [retranscribeErrorMessage, setRetranscribeErrorMessage] = useState('')
   const wsRef = useRef<WebSocket | null>(null)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
-  const retranscribePollRef = useRef<NodeJS.Timeout | null>(null)  // 重转写专用轮询
-  const manualVersionRef = useRef(false)  // 用户是否手动选择了版本
+  const retranscribePollRef = useRef<NodeJS.Timeout | null>(null)
+  const manualVersionRef = useRef(false)
 
   useEffect(() => {
     loadMeeting()
@@ -149,7 +80,6 @@ export default function MeetingDetail() {
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data)
         if (data.type === 'retranscribe_done') {
-          // 设置目标版本完成
           setPendingRetranscribeVersion(null)
           setIsRetranscribing(false)
           setRetranscribeError(false)
@@ -239,20 +169,18 @@ export default function MeetingDetail() {
   }
 
   const handleRetranscribe = async () => {
-    if (!id || !window.confirm(t.confirmRetranscribe)) return
+    if (!id || !window.confirm(t('meeting.confirmRetranscribe'))) return
     setIsRetranscribing(true)
     setRetranscribeError(false)
     setRetranscribeErrorMessage('')
-    manualVersionRef.current = false  // 重置，允许自动选择新版本
+    manualVersionRef.current = false
     try {
       const backendUrl = await window.electronAPI?.getBackendUrl()
       const res = await fetch(`${backendUrl}/api/meetings/${id}/retranscribe`, { method: 'POST' })
       if (res.ok) {
         const data = await res.json()
         setPendingRetranscribeVersion(data.version)
-        // 清理旧重转写轮询
         if (retranscribePollRef.current) clearInterval(retranscribePollRef.current)
-        // 先立即刷一次显示 processing 状态
         setTimeout(() => loadMeeting(), 100)
         // 专用轮询：等待版本出现或失败，兜底 WebSocket
         retranscribePollRef.current = setInterval(async () => {
@@ -278,7 +206,7 @@ export default function MeetingDetail() {
                 setIsRetranscribing(false)
                 setPendingRetranscribeVersion(null)
                 setRetranscribeError(true)
-                setRetranscribeErrorMessage(t.retranscribeFailed)
+                setRetranscribeErrorMessage(t('meeting.retranscribeFailed'))
                 if (retranscribePollRef.current) { clearInterval(retranscribePollRef.current); retranscribePollRef.current = null }
                 return
               }
@@ -291,16 +219,16 @@ export default function MeetingDetail() {
         setIsRetranscribing(false)
         setRetranscribeError(true)
         setRetranscribeErrorMessage(
-          msg.includes('No audio') ? t.retranscribeNoAudio
-          : msg.includes('not found') ? t.retranscribeNoAudio
-          : t.retranscribeFailed
+          msg.includes('No audio') ? t('meeting.retranscribeNoAudio')
+          : msg.includes('not found') ? t('meeting.retranscribeNoAudio')
+          : t('meeting.retranscribeFailed')
         )
       }
     } catch (err) {
       console.error('Failed to retranscribe:', err)
       setIsRetranscribing(false)
       setRetranscribeError(true)
-      setRetranscribeErrorMessage(t.retranscribeFailed)
+      setRetranscribeErrorMessage(t('meeting.retranscribeFailed'))
     }
   }
 
@@ -313,26 +241,26 @@ export default function MeetingDetail() {
       .join('\n')
 
     if (type === 'markdown') {
-      content = `# ${meeting?.title || t.exportTitle}\n\n`
-      content += `**${t.date}**: ${meeting?.created_at}\n`
-      content += `**${t.durationLabel}**: ${Math.floor((meeting?.duration_seconds || 0) / 60)} ${language === 'zh' ? '分钟' : 'min'}\n\n`
-      content += `## ${t.exportSummary}\n${minutes.summary}\n\n`
-      content += `## ${t.exportKeyPoints}\n${minutes.key_points.map((p: string) => `- ${p}`).join('\n')}\n\n`
-      content += `## ${t.exportActionItems}\n${minutes.action_items.map((a: string) => `- [ ] ${a}`).join('\n')}\n\n`
-      content += `## ${t.exportNextSteps}\n${minutes.next_steps}\n\n`
+      content = `# ${meeting?.title || t('export.title')}\n\n`
+      content += `**${t('meeting.date')}**: ${meeting?.created_at}\n`
+      content += `**${t('meeting.duration')}**: ${Math.floor((meeting?.duration_seconds || 0) / 60)} ${uiLanguage === 'zh' ? '分钟' : 'min'}\n\n`
+      content += `## ${t('export.summary')}\n${minutes.summary}\n\n`
+      content += `## ${t('export.keyPoints')}\n${minutes.key_points.map((p: string) => `- ${p}`).join('\n')}\n\n`
+      content += `## ${t('export.actionItems')}\n${minutes.action_items.map((a: string) => `- [ ] ${a}`).join('\n')}\n\n`
+      content += `## ${t('export.nextSteps')}\n${minutes.next_steps}\n\n`
       if (transcriptText) {
-        content += `## ${t.exportTranscript}\n${transcriptText}\n`
+        content += `## ${t('export.transcript')}\n${transcriptText}\n`
       }
     } else {
-      content = `${meeting?.title || t.exportTitle}\n`
-      content += `${t.date}: ${meeting?.created_at}\n`
-      content += `${t.durationLabel}: ${Math.floor((meeting?.duration_seconds || 0) / 60)} ${language === 'zh' ? '分钟' : 'min'}\n\n`
-      content += `${t.exportSummary}:\n${minutes.summary}\n\n`
-      content += `${t.exportKeyPoints}:\n${minutes.key_points.map((p: string) => `- ${p}`).join('\n')}\n\n`
-      content += `${t.exportActionItems}:\n${minutes.action_items.map((a: string) => `[ ] ${a}`).join('\n')}\n\n`
-      content += `${t.exportNextSteps}:\n${minutes.next_steps}\n\n`
+      content = `${meeting?.title || t('export.title')}\n`
+      content += `${t('meeting.date')}: ${meeting?.created_at}\n`
+      content += `${t('meeting.duration')}: ${Math.floor((meeting?.duration_seconds || 0) / 60)} ${uiLanguage === 'zh' ? '分钟' : 'min'}\n\n`
+      content += `${t('export.summary')}:\n${minutes.summary}\n\n`
+      content += `${t('export.keyPoints')}:\n${minutes.key_points.map((p: string) => `- ${p}`).join('\n')}\n\n`
+      content += `${t('export.actionItems')}:\n${minutes.action_items.map((a: string) => `[ ] ${a}`).join('\n')}\n\n`
+      content += `${t('export.nextSteps')}:\n${minutes.next_steps}\n\n`
       if (transcriptText) {
-        content += `${t.exportTranscript}:\n${transcriptText}\n`
+        content += `${t('export.transcript')}:\n${transcriptText}\n`
       }
     }
 
@@ -346,7 +274,7 @@ export default function MeetingDetail() {
   }
 
   const handleDelete = async () => {
-    if (!id || !window.confirm(t.confirmDelete)) return
+    if (!id || !window.confirm(t('meeting.confirmDelete'))) return
     try {
       const backendUrl = await window.electronAPI?.getBackendUrl()
       await fetch(`${backendUrl}/api/meetings/${id}`, { method: 'DELETE' })
@@ -359,7 +287,7 @@ export default function MeetingDetail() {
   const formatDuration = (seconds: number): string => {
     const m = Math.floor(seconds / 60)
     const s = seconds % 60
-    return `${m}${t.durationMin}${s}${t.durationSec}`
+    return `${m}${t('meeting.durationMin')}${s}${t('meeting.durationSec')}`
   }
 
   // 根据 activeVersion 过滤转写记录
@@ -370,7 +298,7 @@ export default function MeetingDetail() {
   if (!meeting) {
     return (
       <div className="flex items-center justify-center h-screen text-gray-400">
-        {t.loading}
+        {t('meeting.loading')}
       </div>
     )
   }
@@ -400,7 +328,7 @@ export default function MeetingDetail() {
             className="text-lg font-semibold text-gray-900 cursor-pointer hover:text-primary-600"
             onClick={() => setEditingTitle(true)}
           >
-            {title || t.untitled}
+            {title || t('meeting.untitled')}
           </h1>
         )}
         <span className="text-sm text-gray-400">
@@ -418,7 +346,7 @@ export default function MeetingDetail() {
           >
             {transcriptVersions.map((v) => (
               <option key={v} value={v}>
-                {v === 1 ? `${t.version} ${v} (${t.versionOriginal})` : `${t.version} ${v}`}
+                {v === 1 ? `${t('meeting.version')} ${v} (${t('meeting.versionOriginal')})` : `${t('meeting.version')} ${v}`}
               </option>
             ))}
           </select>
@@ -427,32 +355,32 @@ export default function MeetingDetail() {
           onClick={handleRegenerate}
           className="px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50"
         >
-          {t.regenerate}
+          {t('meeting.regenerate')}
         </button>
         <button
           onClick={handleRetranscribe}
           disabled={isRetranscribing || meeting.status === 'processing' || meeting.status === 'recording'}
           className="px-3 py-1.5 text-sm border border-primary-200 text-primary-600 rounded-md hover:bg-primary-50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {isRetranscribing ? t.retranscribing : t.retranscribe}
+          {isRetranscribing ? t('meeting.retranscribing') : t('meeting.retranscribe')}
         </button>
         <button
           onClick={() => handleExport('markdown')}
           className="px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50"
         >
-          {t.exportMd}
+          {t('meeting.exportMd')}
         </button>
         <button
           onClick={() => handleExport('txt')}
           className="px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50"
         >
-          {t.exportTxt}
+          {t('meeting.exportTxt')}
         </button>
         <button
           onClick={handleDelete}
           className="px-3 py-1.5 text-sm border border-red-200 text-red-600 rounded-md hover:bg-red-50"
         >
-          {t.delete}
+          {t('meeting.delete')}
         </button>
       </div>
 
@@ -461,21 +389,21 @@ export default function MeetingDetail() {
         <div className="bg-blue-50 border-b border-blue-200 px-6 py-2.5 flex items-center gap-3">
           <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
           <span className="text-sm text-blue-700 font-medium">
-            {t.retranscribingStatus} (v{pendingRetranscribeVersion})
+            {t('meeting.retranscribingStatus')} (v{pendingRetranscribeVersion})
           </span>
           <span className="text-xs text-blue-500">
-            {language === 'zh' ? '会议纪要将在转写完成后自动更新' : 'Minutes will update after transcription completes'}
+            {t('meeting.retranscribeHint')}
           </span>
         </div>
       )}
       {retranscribeError && (
         <div className="bg-red-50 border-b border-red-200 px-6 py-2.5 flex items-center gap-3">
-          <span className="text-sm text-red-700">{retranscribeErrorMessage || t.retranscribeFailed}</span>
+          <span className="text-sm text-red-700">{retranscribeErrorMessage || t('meeting.retranscribeFailed')}</span>
           <button
             onClick={() => { setRetranscribeError(false); setRetranscribeErrorMessage('') }}
             className="ml-auto text-xs text-red-500 hover:text-red-700 underline"
           >
-            {language === 'zh' ? '关闭' : 'Dismiss'}
+            {t('meeting.dismissError')}
           </button>
         </div>
       )}
@@ -492,7 +420,7 @@ export default function MeetingDetail() {
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
           >
-            {t.summary}
+            {t('meeting.summary')}
           </button>
           <button
             onClick={() => setActiveTab('transcript')}
@@ -502,7 +430,7 @@ export default function MeetingDetail() {
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
           >
-            {t.transcript}
+            {t('meeting.transcript')}
             {filteredTranscripts.length > 0 && (
               <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-gray-100 rounded-full">
                 {filteredTranscripts.length}
@@ -517,15 +445,15 @@ export default function MeetingDetail() {
             meeting.status === 'processing' || meeting.status === 'recording' ? (
               <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400 text-sm">
                 <div className="w-6 h-6 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
-                {t.generating}
+                {t('meeting.generating')}
               </div>
             ) : minutes ? (
               <div className="max-w-3xl mx-auto">
-                <MinutesPanel minutes={minutes} language={language} />
+                <MinutesPanel minutes={minutes} />
               </div>
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-                {t.noMinutes}
+                {t('meeting.noMinutes')}
               </div>
             )
           ) : transcripts.length > 0 ? (
@@ -534,11 +462,11 @@ export default function MeetingDetail() {
             </div>
           ) : meeting.status === 'recording' ? (
             <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-              {t.waitingTranscript}
+              {t('meeting.waitingTranscript')}
             </div>
           ) : (
             <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-              {t.noTranscript}
+              {t('meeting.noTranscript')}
             </div>
           )}
         </div>

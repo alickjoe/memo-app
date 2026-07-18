@@ -13,6 +13,7 @@ interface AppSettings {
   llm_output_language: string
   audio_input_device: string
   audio_output_device: string
+  ui_language: string
 }
 
 interface SettingsState {
@@ -36,6 +37,7 @@ const defaultSettings: AppSettings = {
   llm_output_language: 'en',
   audio_input_device: '',
   audio_output_device: '',
+  ui_language: 'en',
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
