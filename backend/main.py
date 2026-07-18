@@ -13,6 +13,7 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from concurrent.futures import ThreadPoolExecutor
 
 from storage.db import get_db, init_db
 from audio.capture import AudioCapture
@@ -28,6 +29,7 @@ logger = logging.getLogger("memo-backend")
 active_captures: dict[str, AudioCapture] = {}
 active_stt: dict[str, STTEngine] = {}
 ws_connections: dict[str, list[WebSocket]] = {}
+_retranscribe_executor = ThreadPoolExecutor(max_workers=1)
 
 # 初始化音频捕获器（单例）
 audio_capture: Optional[AudioCapture] = None
@@ -222,7 +224,7 @@ async def get_meeting(meeting_id: str):
 
     # 获取转写记录
     cursor = await db.execute(
-        "SELECT speaker, text, start_time, end_time FROM transcript_segments WHERE meeting_id = ? ORDER BY start_time",
+        "SELECT speaker, text, start_time, end_time, version FROM transcript_segments WHERE meeting_id = ? ORDER BY start_time",
         (meeting_id,),
     )
     ts_rows = await cursor.fetchall()
@@ -232,11 +234,20 @@ async def get_meeting(meeting_id: str):
             "text": row[1],
             "start_time": row[2],
             "end_time": row[3],
+            "version": row[4] or 1,
         }
         for row in ts_rows
     ]
 
-    return {"meeting": meeting, "minutes": minutes, "transcripts": transcripts}
+    # 获取可用版本列表
+    cursor = await db.execute(
+        "SELECT DISTINCT version FROM transcript_segments WHERE meeting_id = ? ORDER BY version",
+        (meeting_id,),
+    )
+    ver_rows = await cursor.fetchall()
+    transcript_versions = [row[0] or 1 for row in ver_rows]
+
+    return {"meeting": meeting, "minutes": minutes, "transcripts": transcripts, "transcript_versions": transcript_versions}
 
 
 @app.delete("/api/meetings/{meeting_id}")
@@ -286,6 +297,92 @@ async def regenerate_minutes(meeting_id: str):
     # 重新生成
     asyncio.create_task(generate_minutes(meeting_id, transcript_text))
     return {"status": "regenerating"}
+
+
+@app.post("/api/meetings/{meeting_id}/retranscribe")
+async def retranscribe_meeting(meeting_id: str):
+    """重新转写完整音频文件（离线高质量模式）
+    
+    短音频（< 25MB）：整段发送，按句子拆分
+    长音频（>= 25MB）：重叠滑动窗口分段
+    结果存入新版本，不覆盖原有转写
+    """
+    db = await get_db()
+
+    # 获取会议信息
+    cursor = await db.execute(
+        "SELECT audio_path, status FROM meetings WHERE id = ?",
+        (meeting_id,),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return {"error": "Meeting not found"}, 404
+
+    audio_path = row[0]
+
+    # 如果数据库没有 audio_path，尝试从 recordings 目录按 meeting_id 查找
+    recordings_dir = os.path.join(os.path.expanduser("~"), ".memo", "recordings")
+    if not audio_path:
+        guessed_path = os.path.join(recordings_dir, f"{meeting_id}.wav")
+        if os.path.exists(guessed_path):
+            audio_path = guessed_path
+            # 更新数据库中的 audio_path
+            await db.execute(
+                "UPDATE meetings SET audio_path = ? WHERE id = ?",
+                (audio_path, meeting_id),
+            )
+            await db.commit()
+            print(f"[RETRANSCRIBE] Fixed missing audio_path: {audio_path}", flush=True)
+        else:
+            # 检查录音目录中是否有匹配的文件
+            import glob as glob_mod
+            pattern = os.path.join(recordings_dir, f"{meeting_id}.*")
+            matches = glob_mod.glob(pattern)
+            if matches:
+                audio_path = matches[0]
+                await db.execute(
+                    "UPDATE meetings SET audio_path = ? WHERE id = ?",
+                    (audio_path, meeting_id),
+                )
+                await db.commit()
+                print(f"[RETRANSCRIBE] Fixed missing audio_path (glob): {audio_path}", flush=True)
+            else:
+                return {"error": f"No audio file associated with this meeting (expected at {guessed_path})"}, 400
+
+    if not os.path.exists(audio_path):
+        return {"error": f"Audio file not found: {audio_path}"}, 404
+
+    # 确定新版本号
+    cursor = await db.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM transcript_segments WHERE meeting_id = ?",
+        (meeting_id,),
+    )
+    max_ver_row = await cursor.fetchone()
+    new_version = (max_ver_row[0] or 0) + 1
+
+    # 标记为 processing
+    await db.execute(
+        "UPDATE meetings SET status = ? WHERE id = ?",
+        ("processing", meeting_id),
+    )
+    await db.commit()
+
+    print(f"[RETRANSCRIBE] BEFORE executor.submit: meeting={meeting_id}", flush=True)
+
+    # 使用独立线程池执行重转写（完全绕过 asyncio 事件循环）
+    future = _retranscribe_executor.submit(_run_retranscribe_sync, meeting_id, audio_path, new_version)
+    future.add_done_callback(lambda f: (
+        logger.info("Retranscribe thread completed: meeting=%s version=%d", meeting_id, new_version)
+        if not f.exception() else
+        logger.error("Retranscribe thread crashed: meeting=%s error=%s", meeting_id, f.exception())
+    ))
+    print(f"[RETRANSCRIBE] AFTER executor.submit: meeting={meeting_id}", flush=True)
+
+    return {
+        "status": "processing",
+        "version": new_version,
+        "message": f"Re-transcription started (version {new_version})",
+    }
 
 
 # ==================== Audio Import ====================
@@ -386,20 +483,29 @@ async def ws_minutes(websocket: WebSocket, meeting_id: str):
 
 # ==================== Audio Processing Pipeline ====================
 
+# 分段参数常量
+LONG_PAUSE_FRAMES = 8       # 0.8s - 句子边界，触发转写
+MAX_SEGMENT_DURATION = 15.0  # 15s - 最大片段时长，强制断句
+MIN_SPEECH_BYTES = 32000    # 2s - 最小有效语音段 (16kHz * 2bytes * 2)
+CONTEXT_BYTES = 8000        # 0.5s - 上下文前导缓冲区
+
+
 async def process_audio_pipeline(meeting_id: str):
-    """实时音频处理流水线"""
-    logger.info(f"Starting audio pipeline for meeting {meeting_id}")
+    """实时音频处理流水线（改进版：自适应分段 + 滞回 VAD）"""
+    logger.info("Starting audio pipeline for meeting %s (VAD degraded=%s)",
+                 meeting_id, vad.is_degraded if vad else "N/A")
 
     db = await get_db()
     speech_buffer = bytearray()
     audio_offset = 0.0
+    segment_start_offset = 0.0  # 当前语音段起始偏移
     speaker_idx = 0
     chunk_read_count = 0
     timeout_count = 0
-    speech_chunks = 0
-    silence_chunks = 0
-    silence_count = 0       # 连续静音计数，需 >=5 才结束语音段
-    MIN_SPEECH_BYTES = 8000  # 最小语音段 0.5s (16kHz * 2bytes * 0.5)
+    silence_count = 0           # 连续纯静音计数（不含 hangover）
+    segment_count = 0           # 已处理的语音段数量
+    discarded_count = 0         # 被校验丢弃的段数
+    prev_segment_tail = bytearray()  # 上一段末尾 0.5s，用作上下文
 
     try:
         while audio_capture and audio_capture.is_active():
@@ -412,71 +518,120 @@ async def process_audio_pipeline(meeting_id: str):
                 continue
 
             chunk_read_count += 1
-            if chunk_read_count % 20 == 1:
-                logger.info(
-                    "Pipeline: got chunk #%d (%d bytes), speech=%d silence=%d, offset=%.1fs",
-                    chunk_read_count, len(audio_chunk), speech_chunks, silence_chunks, audio_offset,
-                )
 
-            # VAD 检测
-            is_speech = await vad.detect(audio_chunk)
-            if is_speech:
-                speech_chunks += 1
-                silence_count = 0  # 恢复语音，重置静音计数
+            # 滞回 VAD 检测
+            vad_state = await vad.detect_with_hysteresis(audio_chunk)
+
+            if vad_state in ('speech', 'hangover', 'pending'):
+                # 语音或拖尾或候选帧：累积到缓冲区
+                silence_count = 0
                 if len(speech_buffer) == 0:
-                    logger.info("Pipeline: speech start detected at offset=%.1fs", audio_offset)
+                    segment_start_offset = audio_offset
+                    logger.info("Pipeline: speech start at offset=%.1fs", audio_offset)
                 speech_buffer = vad.append_buffer(speech_buffer, audio_chunk)
-            elif len(speech_buffer) > 0:
-                silence_count += 1
-                silence_chunks += 1
-                # 需连续 5 个静音 chunk（0.5s）才认为语音段结束
-                if silence_count >= 5:
-                    segment_start = audio_offset - len(speech_buffer) / 16000.0
-                    segment_end = audio_offset
 
-                    # 最小语音时长检查：不足 0.5s 丢弃
-                    if len(speech_buffer) >= MIN_SPEECH_BYTES:
-                        # 说话人识别
-                        speaker_label = await diarizer.identify(speech_buffer)
-                        if not speaker_label:
-                            speaker_idx += 1
-                            speaker_label = f"Speaker {chr(65 + (speaker_idx % 26))}"
+            elif vad_state == 'silence':
+                if len(speech_buffer) > 0:
+                    silence_count += 1
 
-                        # STT 转写
-                        text = await stt_engine.transcribe(speech_buffer)
+                    # 检查是否需要断句
+                    buffer_duration = len(speech_buffer) / (16000 * 2)
+                    should_segment = False
+                    reason = ""
 
-                        if text:
-                            # 存储转写结果
-                            await db.execute(
-                                "INSERT INTO transcript_segments (meeting_id, speaker, start_time, end_time, text) VALUES (?, ?, ?, ?, ?)",
-                                (meeting_id, speaker_label, segment_start, segment_end, text),
+                    # 条件1：静音达到长停顿阈值
+                    if silence_count >= LONG_PAUSE_FRAMES:
+                        should_segment = True
+                        reason = "long_pause"
+
+                    # 条件2：片段达到最大时长
+                    elif buffer_duration >= MAX_SEGMENT_DURATION:
+                        should_segment = True
+                        reason = "max_duration"
+
+                    if should_segment:
+                        segment_bytes = bytes(speech_buffer)
+                        seg_duration = len(segment_bytes) / (16000 * 2)
+
+                        # 检查最小语音长度
+                        if len(segment_bytes) >= MIN_SPEECH_BYTES:
+                            segment_start = segment_start_offset
+                            segment_end = audio_offset
+
+                            # 上下文延伸：拼接上一段末尾
+                            asr_input = bytes(prev_segment_tail) + segment_bytes
+
+                            # 说话人识别
+                            speaker_label = await diarizer.identify(segment_bytes)
+                            if not speaker_label:
+                                speaker_idx += 1
+                                speaker_label = f"Speaker {chr(65 + (speaker_idx % 26))}"
+
+                            # STT 转写（带校验）
+                            text = await stt_engine.transcribe_with_validation(asr_input)
+
+                            if text:
+                                segment_count += 1
+                                await db.execute(
+                                    "INSERT INTO transcript_segments (meeting_id, speaker, start_time, end_time, text) VALUES (?, ?, ?, ?, ?)",
+                                    (meeting_id, speaker_label, segment_start, segment_end, text),
+                                )
+                                await db.commit()
+
+                                # 推送到前端
+                                segment_data = {
+                                    "type": "transcript",
+                                    "segment": {
+                                        "speaker": speaker_label,
+                                        "text": text,
+                                        "start_time": segment_start,
+                                        "end_time": segment_end,
+                                    },
+                                }
+                                for ws in ws_connections.get(meeting_id, []):
+                                    try:
+                                        await ws.send_json(segment_data)
+                                    except Exception:
+                                        pass
+
+                                logger.info(
+                                    "Pipeline: segment #%d transcribed: dur=%.1fs, text_len=%d, "
+                                    "speaker=%s, reason=%s",
+                                    segment_count, seg_duration, len(text),
+                                    speaker_label, reason,
+                                )
+                            else:
+                                discarded_count += 1
+                                logger.info(
+                                    "Pipeline: segment discarded by validation: dur=%.1fs, reason=%s",
+                                    seg_duration, reason,
+                                )
+                        else:
+                            logger.debug(
+                                "Pipeline: segment too short (%.1fs < 2.0s), skipped",
+                                seg_duration,
                             )
-                            await db.commit()
 
-                            # 推送到前端
-                            segment_data = {
-                                "type": "transcript",
-                                "segment": {
-                                    "speaker": speaker_label,
-                                    "text": text,
-                                    "start_time": segment_start,
-                                    "end_time": segment_end,
-                                },
-                            }
-                            for ws in ws_connections.get(meeting_id, []):
-                                try:
-                                    await ws.send_json(segment_data)
-                                except Exception:
-                                    pass
-                    else:
-                        logger.debug("Pipeline: speech segment too short (%d bytes), skipped", len(speech_buffer))
+                        # 保存末尾作为下一段上下文
+                        tail_len = min(CONTEXT_BYTES, len(segment_bytes))
+                        prev_segment_tail = bytearray(segment_bytes[-tail_len:])
 
-                    speech_buffer = bytearray()
-                    silence_count = 0
-            else:
-                silence_chunks += 1
+                        # 重置
+                        speech_buffer = bytearray()
+                        silence_count = 0
+                        vad.reset_state()
 
-            audio_offset += len(audio_chunk) / 16000.0
+            audio_offset += len(audio_chunk) / (16000 * 2)
+
+            # 定期状态日志
+            if chunk_read_count % 100 == 1:
+                buffer_dur = len(speech_buffer) / (16000 * 2) if speech_buffer else 0
+                logger.info(
+                    "Pipeline: chunk #%d, offset=%.1fs, buffer=%.1fs, segments=%d, "
+                    "discarded=%d, silence=%d",
+                    chunk_read_count, audio_offset, buffer_dur,
+                    segment_count, discarded_count, silence_count,
+                )
 
     except Exception as e:
         logger.error(f"Pipeline error: {e}")
@@ -502,9 +657,90 @@ async def process_audio_pipeline(meeting_id: str):
             await generate_minutes(meeting_id, transcript_text)
 
         logger.info(
-            "Pipeline completed for meeting %s: %d chunks read, %d timeouts, %d seconds",
-            meeting_id, chunk_read_count, timeout_count, int(audio_offset),
+            "Pipeline completed for meeting %s: %d chunks, %d timeouts, "
+            "%d segments transcribed, %d discarded, %ds duration",
+            meeting_id, chunk_read_count, timeout_count,
+            segment_count, discarded_count, int(audio_offset),
         )
+
+
+def _run_retranscribe_sync(meeting_id: str, audio_path: str, version: int):
+    """线程中运行的同步包装器，创建新事件循环执行 async _do_retranscribe"""
+    print(f"[RETRANSCRIBE] sync wrapper started: meeting={meeting_id} version={version}", flush=True)
+    try:
+        asyncio.run(_do_retranscribe(meeting_id, audio_path, version))
+        print(f"[RETRANSCRIBE] sync wrapper completed: meeting={meeting_id}", flush=True)
+    except Exception as e:
+        print(f"[RETRANSCRIBE] sync wrapper CRASHED: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+
+
+async def _do_retranscribe(meeting_id: str, audio_path: str, version: int):
+    """后台执行重新转写"""
+    logger.info("Retranscribe task STARTED: meeting=%s version=%d audio=%s", meeting_id, version, audio_path)
+    print(f"[RETRANSCRIBE] _do_retranscribe executing: meeting={meeting_id} version={version}", flush=True)
+    db = await get_db()
+
+    try:
+        segments = await stt_engine.transcribe_file(audio_path)
+
+        if not segments:
+            logger.warning("Retranscribe produced no segments for meeting %s", meeting_id)
+            await db.execute(
+                "UPDATE meetings SET status = ? WHERE id = ?",
+                ("error", meeting_id),
+            )
+            await db.commit()
+            return
+
+        # 存入新版本的转写段
+        speaker_idx = 0
+        for seg in segments:
+            speaker_idx += 1
+            speaker_label = f"Speaker {chr(65 + (speaker_idx % 26))}"
+            await db.execute(
+                "INSERT INTO transcript_segments (meeting_id, speaker, start_time, end_time, text, version) VALUES (?, ?, ?, ?, ?, ?)",
+                (meeting_id, speaker_label, seg["start_time"], seg["end_time"], seg["text"], version),
+            )
+        await db.commit()
+
+        logger.info(
+            "Retranscribe stored %d segments (version %d) for meeting %s",
+            len(segments), version, meeting_id,
+        )
+
+        # 用新版本转写生成纪要
+        transcript_text = "\n".join(
+            [f"[Speaker]: {seg['text']}" for seg in segments]
+        )
+        await generate_minutes(meeting_id, transcript_text)
+
+        # 更新状态
+        await db.execute(
+            "UPDATE meetings SET status = ? WHERE id = ?",
+            ("done", meeting_id),
+        )
+        await db.commit()
+
+        # 推送完成通知
+        for ws in ws_connections.get(meeting_id, []):
+            try:
+                await ws.send_json({
+                    "type": "retranscribe_done",
+                    "version": version,
+                    "segments": len(segments),
+                })
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.exception("Retranscribe error for meeting %s: %s", meeting_id, e)
+        await db.execute(
+            "UPDATE meetings SET status = ? WHERE id = ?",
+            ("error", meeting_id),
+        )
+        await db.commit()
 
 
 async def process_imported_audio(meeting_id: str, file_path: str):
@@ -522,15 +758,15 @@ async def process_imported_audio(meeting_id: str, file_path: str):
             frames = wf.readframes(wf.getnframes())
 
         # 分块处理
-        chunk_size = 16000 * 5 * 2  # 5秒 chunks (16kHz * 2 bytes)
+        chunk_size = 16000 * 10 * 2  # 10秒 chunks (16kHz * 2 bytes)
         offset = 0
 
         for i in range(0, len(frames), chunk_size):
             chunk = frames[i:i + chunk_size]
-            if len(chunk) < 16000:  # 小于1秒跳过
+            if len(chunk) < 32000:  # 小于2秒跳过
                 continue
 
-            text = await stt_engine.transcribe(chunk)
+            text = await stt_engine.transcribe_with_validation(chunk)
             if text:
                 db = await get_db()
                 await db.execute(

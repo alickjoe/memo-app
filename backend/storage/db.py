@@ -48,6 +48,7 @@ async def init_db():
             start_time REAL,
             end_time REAL,
             text TEXT,
+            version INTEGER DEFAULT 1,
             FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
         )
     """)
@@ -73,6 +74,10 @@ async def init_db():
     """)
 
     await db.commit()
+
+    # 迁移：为已有 transcript_segments 添加 version 列
+    await _migrate_add_version_column(db)
+
     logger.info("Database tables initialized")
 
 
@@ -83,3 +88,18 @@ async def close_db():
         await _db.close()
         _db = None
         logger.info("Database connection closed")
+
+
+async def _migrate_add_version_column(db: aiosqlite.Connection):
+    """为已有数据库添加 version 列（幂等迁移）"""
+    try:
+        cursor = await db.execute("PRAGMA table_info(transcript_segments)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        if "version" not in columns:
+            await db.execute(
+                "ALTER TABLE transcript_segments ADD COLUMN version INTEGER DEFAULT 1"
+            )
+            await db.commit()
+            logger.info("Migration: added version column to transcript_segments")
+    except Exception as e:
+        logger.warning(f"Migration check skipped: {e}")
