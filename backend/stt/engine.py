@@ -4,7 +4,6 @@
 import os
 import io
 import logging
-import asyncio
 from typing import Optional
 
 import httpx

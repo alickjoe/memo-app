@@ -3,7 +3,6 @@
 使用 Silero VAD 模型过滤静音段，节省 API 费用
 """
 import logging
-from typing import Optional
 
 logger = logging.getLogger("memo.vad")
 

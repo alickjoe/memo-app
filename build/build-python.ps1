@@ -15,6 +15,13 @@ $outputDir = "backend-dist"
 if (Test-Path $outputDir) {
     Remove-Item -Recurse -Force $outputDir
 }
+# Also clean stale PyInstaller spec/work to avoid stale --add-data references
+if (Test-Path build/pyinstaller-spec) {
+    Remove-Item -Recurse -Force build/pyinstaller-spec
+}
+if (Test-Path build/pyinstaller-work) {
+    Remove-Item -Recurse -Force build/pyinstaller-work
+}
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 # Build with PyInstaller
@@ -25,7 +32,6 @@ pyinstaller `
     --distpath $outputDir `
     --workpath build/pyinstaller-work `
     --specpath build/pyinstaller-spec `
-    --add-data "backend/llm/prompts.py;llm" `
     --hidden-import uvicorn.logging `
     --hidden-import uvicorn.loops `
     --hidden-import uvicorn.loops.auto `

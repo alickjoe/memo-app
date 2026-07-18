@@ -3,7 +3,6 @@ Memo - 会议纪要应用后端
 FastAPI + WebSocket 服务，支持音频捕获、云端 STT、LLM 纪要生成
 """
 import os
-import sys
 import json
 import uuid
 import asyncio
@@ -12,11 +11,10 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from storage.db import get_db, init_db
-from storage.models import Meeting, TranscriptSegment, Minutes, AppSettings
 from audio.capture import AudioCapture
 from audio.vad import VoiceActivityDetector
 from stt.engine import STTEngine
@@ -514,7 +512,6 @@ async def process_imported_audio(meeting_id: str, file_path: str):
     logger.info(f"Processing imported audio: {file_path}")
 
     import wave
-    import io
 
     try:
         # 读取音频文件并转码为 16kHz mono
