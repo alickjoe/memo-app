@@ -25,22 +25,30 @@ interface TranscriptSegment {
   text: string
   start_time: number
   end_time: number
+  version?: number
 }
 
 const ZH = {
   summary: '总结',
   transcript: '转写记录',
   regenerate: '重新生成',
+  retranscribe: '重新转写',
+  retranscribing: '转写中...',
   exportMd: '导出 Markdown',
   exportTxt: '导出 TXT',
   delete: '删除',
   untitled: '未命名会议',
   loading: '加载中...',
   generating: '正在生成会议纪要...',
+  retranscribingStatus: '正在重新转写...',
+  retranscribeDone: '重新转写完成！',
+  retranscribeFailed: '重新转写失败',
+  retranscribeNoAudio: '此会议没有关联的音频文件，无法重新转写',
   noMinutes: '暂无纪要内容',
   waitingTranscript: '等待转写内容...',
   noTranscript: '暂无转写记录',
   confirmDelete: '确定要删除此会议吗？相关录音和纪要将被永久删除。',
+  confirmRetranscribe: '将使用完整音频重新转写。短音频整段转写，长音频滑动窗口分段。旧转写记录保留不丢失。',
   durationMin: '分',
   durationSec: '秒',
   date: '日期',
@@ -51,22 +59,31 @@ const ZH = {
   exportNextSteps: '下一步',
   exportTranscript: '转写记录',
   exportTitle: '会议纪要',
+  version: '版本',
+  versionOriginal: '原始',
 }
 
 const EN: typeof ZH = {
   summary: 'Summary',
   transcript: 'Transcript',
   regenerate: 'Regenerate',
+  retranscribe: 'Re-transcribe',
+  retranscribing: 'Transcribing...',
   exportMd: 'Export Markdown',
   exportTxt: 'Export TXT',
   delete: 'Delete',
   untitled: 'Untitled Meeting',
   loading: 'Loading...',
   generating: 'Generating meeting minutes...',
+  retranscribingStatus: 'Re-transcribing...',
+  retranscribeDone: 'Re-transcription complete!',
+  retranscribeFailed: 'Re-transcription failed',
+  retranscribeNoAudio: 'No audio file associated with this meeting',
   noMinutes: 'No minutes yet',
   waitingTranscript: 'Waiting for transcript...',
   noTranscript: 'No transcript yet',
   confirmDelete: 'Are you sure you want to delete this meeting? All related recordings and minutes will be permanently deleted.',
+  confirmRetranscribe: 'This will re-transcribe the full audio file. Short audio uses whole-file mode, long audio uses sliding window. Existing transcripts are preserved.',
   durationMin: 'min',
   durationSec: 's',
   date: 'Date',
@@ -77,6 +94,8 @@ const EN: typeof ZH = {
   exportNextSteps: 'Next Steps',
   exportTranscript: 'Transcript',
   exportTitle: 'Meeting Minutes',
+  version: 'Version',
+  versionOriginal: 'Original',
 }
 
 export default function MeetingDetail() {
@@ -87,17 +106,26 @@ export default function MeetingDetail() {
   const [meeting, setMeeting] = useState<Meeting | null>(null)
   const [minutes, setMinutes] = useState<Minutes | null>(null)
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([])
+  const [transcriptVersions, setTranscriptVersions] = useState<number[]>([])
+  const [activeVersion, setActiveVersion] = useState<number>(0)
   const [editingTitle, setEditingTitle] = useState(false)
   const [title, setTitle] = useState('')
   const [activeTab, setActiveTab] = useState<'summary' | 'transcript'>('summary')
+  const [isRetranscribing, setIsRetranscribing] = useState(false)
+  const [pendingRetranscribeVersion, setPendingRetranscribeVersion] = useState<number | null>(null)
+  const [retranscribeError, setRetranscribeError] = useState(false)
+  const [retranscribeErrorMessage, setRetranscribeErrorMessage] = useState('')
   const wsRef = useRef<WebSocket | null>(null)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
+  const retranscribePollRef = useRef<NodeJS.Timeout | null>(null)  // 重转写专用轮询
+  const manualVersionRef = useRef(false)  // 用户是否手动选择了版本
 
   useEffect(() => {
     loadMeeting()
     return () => {
       wsRef.current?.close()
       if (pollRef.current) clearInterval(pollRef.current)
+      if (retranscribePollRef.current) clearInterval(retranscribePollRef.current)
     }
   }, [id])
 
@@ -120,7 +148,18 @@ export default function MeetingDetail() {
       ws = new WebSocket(wsUrl)
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data)
-        if (data.type === 'minutes_ready') {
+        if (data.type === 'retranscribe_done') {
+          // 设置目标版本完成
+          setPendingRetranscribeVersion(null)
+          setIsRetranscribing(false)
+          setRetranscribeError(false)
+          setActiveVersion(data.version)
+          manualVersionRef.current = false
+          loadMeeting()
+          ws?.close()
+          if (pollRef.current) clearInterval(pollRef.current)
+          if (retranscribePollRef.current) { clearInterval(retranscribePollRef.current); retranscribePollRef.current = null }
+        } else if (data.type === 'minutes_ready') {
           loadMeeting()
           ws?.close()
           if (pollRef.current) clearInterval(pollRef.current)
@@ -138,9 +177,7 @@ export default function MeetingDetail() {
         if (res.ok) {
           const data = await res.json()
           if (data.meeting.status === 'done' || data.meeting.status === 'error') {
-            setMeeting(data.meeting)
-            setMinutes(data.minutes)
-            setTranscripts(data.transcripts || [])
+            loadMeeting()
             if (pollRef.current) clearInterval(pollRef.current)
             ws?.close()
           }
@@ -164,7 +201,27 @@ export default function MeetingDetail() {
         setMeeting(data.meeting)
         setMinutes(data.minutes)
         setTranscripts(data.transcripts || [])
+        setTranscriptVersions(data.transcript_versions || [])
+        // 自动选择最新版本（除非用户手动切换过）
+        const versions: number[] = data.transcript_versions || []
+        if (versions.length > 0 && !manualVersionRef.current) {
+          setActiveVersion(Math.max(...versions))
+        }
         setTitle(data.meeting.title)
+        // 重转写完成检测：目标版本号已出现在转写列表中
+        if (pendingRetranscribeVersion !== null && versions.includes(pendingRetranscribeVersion)) {
+          setIsRetranscribing(false)
+          setPendingRetranscribeVersion(null)
+          setRetranscribeError(false)
+          setActiveVersion(pendingRetranscribeVersion)
+          manualVersionRef.current = false
+        }
+        // 重转写失败检测
+        if (pendingRetranscribeVersion !== null && data.meeting.status === 'error') {
+          setIsRetranscribing(false)
+          setPendingRetranscribeVersion(null)
+          setRetranscribeError(true)
+        }
       }
     } catch (err) {
       console.error('Failed to load meeting:', err)
@@ -181,11 +238,77 @@ export default function MeetingDetail() {
     }
   }
 
+  const handleRetranscribe = async () => {
+    if (!id || !window.confirm(t.confirmRetranscribe)) return
+    setIsRetranscribing(true)
+    setRetranscribeError(false)
+    setRetranscribeErrorMessage('')
+    manualVersionRef.current = false  // 重置，允许自动选择新版本
+    try {
+      const backendUrl = await window.electronAPI?.getBackendUrl()
+      const res = await fetch(`${backendUrl}/api/meetings/${id}/retranscribe`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        setPendingRetranscribeVersion(data.version)
+        // 清理旧重转写轮询
+        if (retranscribePollRef.current) clearInterval(retranscribePollRef.current)
+        // 先立即刷一次显示 processing 状态
+        setTimeout(() => loadMeeting(), 100)
+        // 专用轮询：等待版本出现或失败，兜底 WebSocket
+        retranscribePollRef.current = setInterval(async () => {
+          try {
+            const pollUrl = await window.electronAPI?.getBackendUrl()
+            const pollRes = await fetch(`${pollUrl}/api/meetings/${id}`)
+            if (pollRes.ok) {
+              const pollData = await pollRes.json()
+              const versions: number[] = pollData.transcript_versions || []
+              // 成功：目标版本号出现在列表中
+              if (versions.includes(data.version)) {
+                setIsRetranscribing(false)
+                setPendingRetranscribeVersion(null)
+                setRetranscribeError(false)
+                setActiveVersion(data.version)
+                manualVersionRef.current = false
+                loadMeeting()
+                if (retranscribePollRef.current) { clearInterval(retranscribePollRef.current); retranscribePollRef.current = null }
+                return
+              }
+              // 失败：状态变为 error
+              if (pollData.meeting.status === 'error') {
+                setIsRetranscribing(false)
+                setPendingRetranscribeVersion(null)
+                setRetranscribeError(true)
+                setRetranscribeErrorMessage(t.retranscribeFailed)
+                if (retranscribePollRef.current) { clearInterval(retranscribePollRef.current); retranscribePollRef.current = null }
+                return
+              }
+            }
+          } catch { /* ignore */ }
+        }, 2000)
+      } else {
+        const errData = await res.json().catch(() => ({ error: '' }))
+        const msg = errData.error || ''
+        setIsRetranscribing(false)
+        setRetranscribeError(true)
+        setRetranscribeErrorMessage(
+          msg.includes('No audio') ? t.retranscribeNoAudio
+          : msg.includes('not found') ? t.retranscribeNoAudio
+          : t.retranscribeFailed
+        )
+      }
+    } catch (err) {
+      console.error('Failed to retranscribe:', err)
+      setIsRetranscribing(false)
+      setRetranscribeError(true)
+      setRetranscribeErrorMessage(t.retranscribeFailed)
+    }
+  }
+
   const handleExport = (type: 'markdown' | 'txt') => {
     if (!minutes) return
     let content = ''
 
-    const transcriptText = transcripts
+    const transcriptText = filteredTranscripts
       .map((seg) => `[${seg.speaker}] ${seg.text}`)
       .join('\n')
 
@@ -239,6 +362,11 @@ export default function MeetingDetail() {
     return `${m}${t.durationMin}${s}${t.durationSec}`
   }
 
+  // 根据 activeVersion 过滤转写记录
+  const filteredTranscripts = activeVersion > 0
+    ? transcripts.filter((seg) => (seg.version || 1) === activeVersion)
+    : transcripts
+
   if (!meeting) {
     return (
       <div className="flex items-center justify-center h-screen text-gray-400">
@@ -279,11 +407,34 @@ export default function MeetingDetail() {
           {meeting.created_at} &middot; {formatDuration(meeting.duration_seconds)}
         </span>
         <div className="flex-1" />
+        {meeting.status === 'done' && transcriptVersions.length > 1 && (
+          <select
+            value={activeVersion}
+            onChange={(e) => {
+              setActiveVersion(Number(e.target.value))
+              manualVersionRef.current = true
+            }}
+            className="px-2 py-1.5 text-sm border border-gray-200 rounded-md bg-white"
+          >
+            {transcriptVersions.map((v) => (
+              <option key={v} value={v}>
+                {v === 1 ? `${t.version} ${v} (${t.versionOriginal})` : `${t.version} ${v}`}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           onClick={handleRegenerate}
           className="px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50"
         >
           {t.regenerate}
+        </button>
+        <button
+          onClick={handleRetranscribe}
+          disabled={isRetranscribing || meeting.status === 'processing' || meeting.status === 'recording'}
+          className="px-3 py-1.5 text-sm border border-primary-200 text-primary-600 rounded-md hover:bg-primary-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isRetranscribing ? t.retranscribing : t.retranscribe}
         </button>
         <button
           onClick={() => handleExport('markdown')}
@@ -304,6 +455,30 @@ export default function MeetingDetail() {
           {t.delete}
         </button>
       </div>
+
+      {/* 重转写状态提示栏 */}
+      {isRetranscribing && pendingRetranscribeVersion !== null && (
+        <div className="bg-blue-50 border-b border-blue-200 px-6 py-2.5 flex items-center gap-3">
+          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm text-blue-700 font-medium">
+            {t.retranscribingStatus} (v{pendingRetranscribeVersion})
+          </span>
+          <span className="text-xs text-blue-500">
+            {language === 'zh' ? '会议纪要将在转写完成后自动更新' : 'Minutes will update after transcription completes'}
+          </span>
+        </div>
+      )}
+      {retranscribeError && (
+        <div className="bg-red-50 border-b border-red-200 px-6 py-2.5 flex items-center gap-3">
+          <span className="text-sm text-red-700">{retranscribeErrorMessage || t.retranscribeFailed}</span>
+          <button
+            onClick={() => { setRetranscribeError(false); setRetranscribeErrorMessage('') }}
+            className="ml-auto text-xs text-red-500 hover:text-red-700 underline"
+          >
+            {language === 'zh' ? '关闭' : 'Dismiss'}
+          </button>
+        </div>
+      )}
 
       {/* 内容区 */}
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -328,9 +503,9 @@ export default function MeetingDetail() {
             }`}
           >
             {t.transcript}
-            {transcripts.length > 0 && (
+            {filteredTranscripts.length > 0 && (
               <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-gray-100 rounded-full">
-                {transcripts.length}
+                {filteredTranscripts.length}
               </span>
             )}
           </button>
@@ -355,7 +530,7 @@ export default function MeetingDetail() {
             )
           ) : transcripts.length > 0 ? (
             <div className="max-w-3xl mx-auto">
-              <TranscriptStream segments={transcripts} />
+              <TranscriptStream segments={filteredTranscripts} />
             </div>
           ) : meeting.status === 'recording' ? (
             <div className="flex items-center justify-center h-full text-gray-400 text-sm">
