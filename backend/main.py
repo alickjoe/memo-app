@@ -41,7 +41,7 @@ summarizer: Optional[LLMSummarizer] = None
 
 def get_port() -> int:
     """获取端口，优先从环境变量读取"""
-    return int(os.environ.get("BACKEND_PORT", "8000"))
+    return int(os.environ.get("BACKEND_PORT", "8765"))
 
 
 @asynccontextmanager
@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
 
     audio_capture = AudioCapture()
     vad = VoiceActivityDetector()
+    await vad._load_model()  # 预加载 Silero VAD 模型
     stt_engine = STTEngine()
     diarizer = SpeakerDiarizer()
     summarizer = LLMSummarizer()
@@ -105,12 +106,18 @@ async def list_devices():
 # ==================== Recording ====================
 
 @app.post("/api/record/start")
-async def start_recording():
-    """开始录制"""
+async def start_recording(request: dict = None):
+    """开始录制，可指定音频设备"""
     meeting_id = str(uuid.uuid4())
+    loopback_device_id = request.get("loopback_device_id") if request else None
+    input_device_id = request.get("input_device_id") if request else None
 
     try:
-        await audio_capture.start(meeting_id)
+        await audio_capture.start(
+            meeting_id,
+            loopback_device_id=loopback_device_id,
+            input_device_id=input_device_id,
+        )
         active_captures[meeting_id] = audio_capture
 
         # 创建会议记录
@@ -215,17 +222,50 @@ async def get_meeting(meeting_id: str):
             "next_steps": min_row[3] or "",
         }
 
-    return {"meeting": meeting, "minutes": minutes}
+    # 获取转写记录
+    cursor = await db.execute(
+        "SELECT speaker, text, start_time, end_time FROM transcript_segments WHERE meeting_id = ? ORDER BY start_time",
+        (meeting_id,),
+    )
+    ts_rows = await cursor.fetchall()
+    transcripts = [
+        {
+            "speaker": row[0],
+            "text": row[1],
+            "start_time": row[2],
+            "end_time": row[3],
+        }
+        for row in ts_rows
+    ]
+
+    return {"meeting": meeting, "minutes": minutes, "transcripts": transcripts}
 
 
 @app.delete("/api/meetings/{meeting_id}")
 async def delete_meeting(meeting_id: str):
-    """删除会议"""
+    """删除会议及其关联数据"""
     db = await get_db()
+
+    # 先获取音频路径
+    cursor = await db.execute(
+        "SELECT audio_path FROM meetings WHERE id = ?", (meeting_id,)
+    )
+    row = await cursor.fetchone()
+    audio_path = row[0] if row else None
+
     await db.execute("DELETE FROM transcript_segments WHERE meeting_id = ?", (meeting_id,))
     await db.execute("DELETE FROM minutes WHERE meeting_id = ?", (meeting_id,))
     await db.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
     await db.commit()
+
+    # 删除磁盘上的音频文件
+    if audio_path and os.path.exists(audio_path):
+        try:
+            os.remove(audio_path)
+            logger.info(f"Deleted audio file: {audio_path}")
+        except Exception as e:
+            logger.warning(f"Failed to delete audio file {audio_path}: {e}")
+
     return {"status": "deleted"}
 
 
@@ -356,57 +396,87 @@ async def process_audio_pipeline(meeting_id: str):
     speech_buffer = bytearray()
     audio_offset = 0.0
     speaker_idx = 0
+    chunk_read_count = 0
+    timeout_count = 0
+    speech_chunks = 0
+    silence_chunks = 0
+    silence_count = 0       # 连续静音计数，需 >=5 才结束语音段
+    MIN_SPEECH_BYTES = 8000  # 最小语音段 0.5s (16kHz * 2bytes * 0.5)
 
     try:
         while audio_capture and audio_capture.is_active():
             # 获取音频块
             audio_chunk = await audio_capture.read_chunk(timeout=1.0)
             if not audio_chunk:
+                timeout_count += 1
+                if timeout_count % 5 == 1:
+                    logger.info("Pipeline: read_chunk timeout #%d", timeout_count)
                 continue
+
+            chunk_read_count += 1
+            if chunk_read_count % 20 == 1:
+                logger.info(
+                    "Pipeline: got chunk #%d (%d bytes), speech=%d silence=%d, offset=%.1fs",
+                    chunk_read_count, len(audio_chunk), speech_chunks, silence_chunks, audio_offset,
+                )
 
             # VAD 检测
             is_speech = await vad.detect(audio_chunk)
             if is_speech:
+                speech_chunks += 1
+                silence_count = 0  # 恢复语音，重置静音计数
+                if len(speech_buffer) == 0:
+                    logger.info("Pipeline: speech start detected at offset=%.1fs", audio_offset)
                 speech_buffer = vad.append_buffer(speech_buffer, audio_chunk)
             elif len(speech_buffer) > 0:
-                # 语音段结束，发送 STT
-                segment_start = audio_offset - len(speech_buffer) / 16000.0
-                segment_end = audio_offset
+                silence_count += 1
+                silence_chunks += 1
+                # 需连续 5 个静音 chunk（0.5s）才认为语音段结束
+                if silence_count >= 5:
+                    segment_start = audio_offset - len(speech_buffer) / 16000.0
+                    segment_end = audio_offset
 
-                # 说话人识别
-                speaker_label = await diarizer.identify(speech_buffer)
-                if not speaker_label:
-                    speaker_idx += 1
-                    speaker_label = f"Speaker {chr(65 + (speaker_idx % 26))}"
+                    # 最小语音时长检查：不足 0.5s 丢弃
+                    if len(speech_buffer) >= MIN_SPEECH_BYTES:
+                        # 说话人识别
+                        speaker_label = await diarizer.identify(speech_buffer)
+                        if not speaker_label:
+                            speaker_idx += 1
+                            speaker_label = f"Speaker {chr(65 + (speaker_idx % 26))}"
 
-                # STT 转写
-                text = await stt_engine.transcribe(speech_buffer)
+                        # STT 转写
+                        text = await stt_engine.transcribe(speech_buffer)
 
-                if text:
-                    # 存储转写结果
-                    await db.execute(
-                        "INSERT INTO transcript_segments (meeting_id, speaker, start_time, end_time, text) VALUES (?, ?, ?, ?, ?)",
-                        (meeting_id, speaker_label, segment_start, segment_end, text),
-                    )
-                    await db.commit()
+                        if text:
+                            # 存储转写结果
+                            await db.execute(
+                                "INSERT INTO transcript_segments (meeting_id, speaker, start_time, end_time, text) VALUES (?, ?, ?, ?, ?)",
+                                (meeting_id, speaker_label, segment_start, segment_end, text),
+                            )
+                            await db.commit()
 
-                    # 推送到前端
-                    segment_data = {
-                        "type": "transcript",
-                        "segment": {
-                            "speaker": speaker_label,
-                            "text": text,
-                            "start_time": segment_start,
-                            "end_time": segment_end,
-                        },
-                    }
-                    for ws in ws_connections.get(meeting_id, []):
-                        try:
-                            await ws.send_json(segment_data)
-                        except Exception:
-                            pass
+                            # 推送到前端
+                            segment_data = {
+                                "type": "transcript",
+                                "segment": {
+                                    "speaker": speaker_label,
+                                    "text": text,
+                                    "start_time": segment_start,
+                                    "end_time": segment_end,
+                                },
+                            }
+                            for ws in ws_connections.get(meeting_id, []):
+                                try:
+                                    await ws.send_json(segment_data)
+                                except Exception:
+                                    pass
+                    else:
+                        logger.debug("Pipeline: speech segment too short (%d bytes), skipped", len(speech_buffer))
 
-                speech_buffer = bytearray()
+                    speech_buffer = bytearray()
+                    silence_count = 0
+            else:
+                silence_chunks += 1
 
             audio_offset += len(audio_chunk) / 16000.0
 
@@ -433,7 +503,10 @@ async def process_audio_pipeline(meeting_id: str):
         if transcript_text:
             await generate_minutes(meeting_id, transcript_text)
 
-        logger.info(f"Pipeline completed for meeting {meeting_id}")
+        logger.info(
+            "Pipeline completed for meeting %s: %d chunks read, %d timeouts, %d seconds",
+            meeting_id, chunk_read_count, timeout_count, int(audio_offset),
+        )
 
 
 async def process_imported_audio(meeting_id: str, file_path: str):

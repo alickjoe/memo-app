@@ -1,11 +1,9 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import path from 'path'
-import { createFloatingBall } from './floating-ball'
 import { createTray, destroyTray } from './tray'
 import { startPythonBackend, stopPythonBackend, getBackendUrl } from './python-bridge'
 
 let mainWindow: BrowserWindow | null = null
-let floatingBallWindow: BrowserWindow | null = null
 let isQuitting = false
 
 // 创建主窗口
@@ -75,6 +73,9 @@ function registerIpcHandlers(): void {
 
 // 应用启动
 app.whenReady().then(async () => {
+  // 禁用菜单栏
+  Menu.setApplicationMenu(null)
+
   registerIpcHandlers()
 
   // 启动 Python 后端
@@ -92,9 +93,6 @@ app.whenReady().then(async () => {
     isQuitting = true
     app.quit()
   })
-
-  // 创建悬浮球
-  floatingBallWindow = createFloatingBall(mainWindow)
 
   // macOS 特定处理
   app.on('activate', () => {

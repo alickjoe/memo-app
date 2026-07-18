@@ -29,10 +29,14 @@ export default function Recording() {
 
   // WebSocket 连接
   useEffect(() => {
+    let ws: WebSocket | null = null
+    let cancelled = false
+
     async function connectWS() {
       const backendUrl = await window.electronAPI?.getBackendUrl()
+      if (cancelled) return
       const wsUrl = backendUrl.replace('http', 'ws') + `/ws/transcript/${id}`
-      const ws = new WebSocket(wsUrl)
+      ws = new WebSocket(wsUrl)
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data)
@@ -47,7 +51,8 @@ export default function Recording() {
 
     connectWS()
     return () => {
-      wsRef.current?.close()
+      cancelled = true
+      ws?.close()
     }
   }, [id])
 

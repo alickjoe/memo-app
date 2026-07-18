@@ -2,21 +2,31 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import MeetingCard from '../components/MeetingCard'
 import { useMeetingStore } from '../stores/meetings'
+import { useSettingsStore } from '../stores/settings'
 import type { Meeting } from '../stores/meetings'
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const { meetings, fetchMeetings, loading } = useMeetingStore()
+  const { meetings, fetchMeetings, loading, deleteMeeting } = useMeetingStore()
+  const { settings, fetchSettings } = useSettingsStore()
   const [dragOver, setDragOver] = useState(false)
 
   useEffect(() => {
     fetchMeetings()
-  }, [fetchMeetings])
+    fetchSettings()
+  }, [fetchMeetings, fetchSettings])
 
   const handleStartRecording = async () => {
     try {
       const backendUrl = await window.electronAPI?.getBackendUrl()
-      const res = await fetch(`${backendUrl}/api/record/start`, { method: 'POST' })
+      const res = await fetch(`${backendUrl}/api/record/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          loopback_device_id: settings.audio_output_device || null,
+          input_device_id: settings.audio_input_device || null,
+        }),
+      })
       if (res.ok) {
         const data = await res.json()
         navigate(`/recording/${data.meeting_id}`)
@@ -60,6 +70,11 @@ export default function Dashboard() {
     } catch (err) {
       console.error('Failed to import audio:', err)
     }
+  }
+
+  const handleDelete = async (meetingId: string) => {
+    if (!window.confirm('确定要删除此会议吗？相关录音和纪要将被永久删除。')) return
+    await deleteMeeting(meetingId)
   }
 
   return (
@@ -131,6 +146,7 @@ export default function Dashboard() {
                   key={meeting.id}
                   meeting={meeting}
                   onClick={() => navigate(`/meeting/${meeting.id}`)}
+                  onDelete={() => handleDelete(meeting.id)}
                 />
               ))}
             </div>

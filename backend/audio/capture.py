@@ -7,11 +7,16 @@ import logging
 import threading
 import wave
 import os
+import time
+import warnings
 from typing import Optional
 from dataclasses import dataclass
 
 import soundcard as sc
 import numpy as np
+
+# soundcard 在 loopback 录制时偶发内部缓冲区溢出，属于已知问题，不影响音频质量
+warnings.filterwarnings("ignore", message="data discontinuity in recording")
 
 logger = logging.getLogger("memo.audio")
 
@@ -47,6 +52,9 @@ class AudioCapture:
         # 输出文件
         self._wave_file: Optional[wave.Wave_write] = None
 
+        # loopback 录制锁，防止超时线程与下次录制竞争
+        self._loopback_lock = threading.Lock()
+
     def list_devices(self) -> list[dict]:
         """列出所有音频设备"""
         devices = []
@@ -63,8 +71,19 @@ class AudioCapture:
             logger.warning(f"Failed to list devices: {e}")
         return devices
 
-    async def start(self, meeting_id: str):
-        """开始录制"""
+    async def start(
+        self,
+        meeting_id: str,
+        loopback_device_id: Optional[str] = None,
+        input_device_id: Optional[str] = None,
+    ):
+        """开始录制
+        
+        Args:
+            meeting_id: 会议ID
+            loopback_device_id: 指定系统音频捕获设备ID，None 则使用系统默认
+            input_device_id: 指定麦克风设备ID，None 则使用系统默认
+        """
         self._meeting_id = meeting_id
         self._is_active = True
         self._is_paused = False
@@ -73,25 +92,50 @@ class AudioCapture:
         # 查找 loopback 设备（系统音频）
         try:
             mics = sc.all_microphones(include_loopback=True)
-            loopback_mics = [m for m in mics if "loopback" in m.name.lower()]
 
-            if loopback_mics:
-                self._loopback_mic = loopback_mics[0]
-                logger.info(f"Using loopback device: {self._loopback_mic.name}")
-            else:
-                # 回退方案：使用默认扬声器
-                speakers = sc.all_speakers()
-                if speakers:
-                    self._loopback_mic = sc.get_microphone(speakers[0].id, include_loopback=True)
-                    logger.info(f"Using speaker loopback: {speakers[0].name}")
+            if loopback_device_id:
+                # 按指定ID查找
+                for mic in mics:
+                    if mic.id == loopback_device_id:
+                        self._loopback_mic = mic
+                        logger.info(f"Using specified loopback device: {mic.name}")
+                        break
+                if not self._loopback_mic:
+                    logger.warning(f"Specified loopback device {loopback_device_id} not found, falling back to default")
+
+            if not self._loopback_mic:
+                # 使用默认 loopback 设备
+                loopback_mics = [m for m in mics if "loopback" in m.name.lower()]
+                if loopback_mics:
+                    self._loopback_mic = loopback_mics[0]
+                    logger.info(f"Using default loopback device: {self._loopback_mic.name}")
+                else:
+                    # 回退方案：使用默认扬声器
+                    speakers = sc.all_speakers()
+                    if speakers:
+                        self._loopback_mic = sc.get_microphone(speakers[0].id, include_loopback=True)
+                        logger.info(f"Using speaker loopback: {speakers[0].name}")
         except Exception as e:
             logger.warning(f"Loopback device not available: {e}")
 
-        # 获取默认麦克风
+        # 获取麦克风
         try:
-            default_mic = sc.default_microphone()
-            self._input_mic = default_mic
-            logger.info(f"Using microphone: {default_mic.name}")
+            if input_device_id:
+                # 按指定ID查找
+                input_mics = sc.all_microphones(include_loopback=False)
+                for mic in input_mics:
+                    if mic.id == input_device_id:
+                        self._input_mic = mic
+                        logger.info(f"Using specified microphone: {mic.name}")
+                        break
+                if not self._input_mic:
+                    logger.warning(f"Specified microphone {input_device_id} not found, falling back to default")
+
+            if not self._input_mic:
+                # 使用系统默认麦克风
+                default_mic = sc.default_microphone()
+                self._input_mic = default_mic
+                logger.info(f"Using default microphone: {default_mic.name}")
         except Exception as e:
             logger.warning(f"Microphone not available: {e}")
 
@@ -159,28 +203,48 @@ class AudioCapture:
         """录制线程主循环"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        chunk_count = 0
+        loopback_timeouts = 0
 
         try:
             with self._loopback_mic.recorder(samplerate=self.sample_rate) as loopback_rec, \
                  self._input_mic.recorder(samplerate=self.sample_rate) as input_rec:
 
+                logger.info("Capture loop started, recorders opened")
+
                 while self._is_active:
                     if self._is_paused:
                         loopback_rec.flush()
                         input_rec.flush()
+                        time.sleep(0.1)
                         continue
 
                     try:
-                        # 读取系统音频
-                        loopback_data = loopback_rec.record(numframes=self.chunk_size)
-                        loopback_data = loopback_data.mean(axis=1) if loopback_data.ndim > 1 else loopback_data
-
-                        # 读取麦克风
+                        # 先读取麦克风（不会阻塞）
                         mic_data = input_rec.record(numframes=self.chunk_size)
                         mic_data = mic_data.mean(axis=1) if mic_data.ndim > 1 else mic_data
 
-                        # 混合两个通道（简单相加）
-                        mixed = (loopback_data * 0.6 + mic_data * 0.4).astype(np.float32)
+                        # 读取系统音频（可能阻塞，加超时保护）
+                        loopback_data = self._record_loopback(loopback_rec)
+                        loopback_has_data = bool(np.any(loopback_data))
+                        if not loopback_has_data:
+                            loopback_timeouts += 1
+                        loopback_data = loopback_data.mean(axis=1) if loopback_data.ndim > 1 else loopback_data
+
+                        # 混合两个通道：loopback 有效时混合，超时时只用麦克风全量
+                        if loopback_has_data:
+                            mixed = (loopback_data * 0.6 + mic_data * 0.4).astype(np.float32)
+                        else:
+                            mixed = mic_data.astype(np.float32)
+
+                        # 每 100 块报告一次信号强度
+                        if chunk_count % 100 == 0:
+                            mic_rms = float(np.sqrt(np.mean(mic_data.astype(np.float32) ** 2)))
+                            mixed_rms = float(np.sqrt(np.mean(mixed ** 2)))
+                            logger.info(
+                                "Signal level: mic_rms=%.4f mixed_rms=%.4f, loopback=%s",
+                                mic_rms, mixed_rms, "yes" if loopback_has_data else "timeout",
+                            )
 
                         # 限幅
                         mixed = np.clip(mixed, -1.0, 1.0)
@@ -195,11 +259,49 @@ class AudioCapture:
                         if self._wave_file:
                             self._wave_file.writeframes(pcm_data)
 
+                        chunk_count += 1
+                        if chunk_count % 50 == 1:
+                            logger.info(
+                                "Capture chunk #%d, buffer_size=%d bytes",
+                                chunk_count, len(self._buffer),
+                            )
+
                     except Exception as e:
                         logger.error(f"Capture error: {e}")
+                        time.sleep(0.05)
                         continue
 
         except Exception as e:
             logger.error(f"Capture loop error: {e}")
         finally:
             loop.close()
+            logger.info(
+                "Capture loop finished: %d chunks, %d loopback timeouts",
+                chunk_count, loopback_timeouts,
+            )
+
+    def _record_loopback(self, recorder, timeout: float = 0.3) -> np.ndarray:
+        """带超时的 loopback 录制，超时返回静音避免阻塞整个流水线"""
+        # 非阻塞获取锁：如果上次超时线程还在运行，放弃本次录制
+        if not self._loopback_lock.acquire(blocking=False):
+            return np.zeros(self.chunk_size, dtype=np.float32)
+
+        result = [None]
+
+        def _read():
+            try:
+                result[0] = recorder.record(numframes=self.chunk_size)
+            except Exception:
+                pass
+            finally:
+                self._loopback_lock.release()
+
+        t = threading.Thread(target=_read, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+
+        if result[0] is not None:
+            return result[0]
+
+        # 超时：后台线程仍在运行（持有锁），下次迭代会跳过 loopback
+        return np.zeros(self.chunk_size, dtype=np.float32)

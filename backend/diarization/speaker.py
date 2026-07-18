@@ -10,6 +10,9 @@ logger = logging.getLogger("memo.diarization")
 class SpeakerDiarizer:
     """简化的说话人分离器"""
 
+    MAX_SPEAKERS = 4   # 最大说话人数上限
+    MATCH_THRESHOLD = 2.0  # 匹配阈值，越大越宽松
+
     def __init__(self):
         self._speaker_embeddings: dict[str, np.ndarray] = {}
         self._next_speaker_id = 0
@@ -26,7 +29,7 @@ class SpeakerDiarizer:
 
             for speaker_id, embedding in self._speaker_embeddings.items():
                 score = np.linalg.norm(features - embedding)
-                if score < best_score and score < 0.5:  # 相似度阈值
+                if score < best_score and score < self.MATCH_THRESHOLD:
                     best_score = score
                     best_match = speaker_id
 
@@ -37,6 +40,17 @@ class SpeakerDiarizer:
                 )
                 return best_match
             else:
+                # 达到上限后不再创建新说话人，强制归入最相似的
+                if len(self._speaker_embeddings) >= self.MAX_SPEAKERS:
+                    best_any = min(
+                        self._speaker_embeddings.keys(),
+                        key=lambda sid: np.linalg.norm(self._speaker_embeddings[sid] - features),
+                    )
+                    self._speaker_embeddings[best_any] = (
+                        self._speaker_embeddings[best_any] * 0.7 + features * 0.3
+                    )
+                    return best_any
+
                 # 新说话人
                 self._next_speaker_id += 1
                 speaker_label = f"Speaker {chr(65 + (self._next_speaker_id - 1) % 26)}"

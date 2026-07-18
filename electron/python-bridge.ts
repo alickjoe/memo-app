@@ -89,6 +89,17 @@ function waitForBackend(url: string, maxRetries = 30): Promise<void> {
 
 // 启动 Python 后端
 export async function startPythonBackend(): Promise<string> {
+  // 优先检测是否已有后端运行（dev.ps1 可能已启动）
+  const defaultUrl = `http://127.0.0.1:8765`
+  try {
+    await waitForBackend(defaultUrl, 1)
+    console.log(`[Python Bridge] Reusing existing backend at ${defaultUrl}`)
+    backendUrl = defaultUrl
+    return backendUrl
+  } catch {
+    // 没有已运行的后端，启动新实例
+  }
+
   backendPort = await findFreePort()
   backendUrl = `http://127.0.0.1:${backendPort}`
 

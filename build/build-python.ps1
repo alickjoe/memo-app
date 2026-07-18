@@ -11,7 +11,7 @@ pip install -r backend/requirements.txt
 pip install pyinstaller
 
 # Clean previous build
-$outputDir = "build/backend-dist"
+$outputDir = "backend-dist"
 if (Test-Path $outputDir) {
     Remove-Item -Recurse -Force $outputDir
 }
@@ -37,7 +37,6 @@ pyinstaller `
     --hidden-import aiosqlite `
     --hidden-import pyaudio `
     --hidden-import soundcard `
-    --hidden-import silero_vad `
     --clean `
     --noconfirm `
     backend/main.py

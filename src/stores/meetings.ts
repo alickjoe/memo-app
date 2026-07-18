@@ -15,6 +15,7 @@ interface MeetingState {
   fetchMeetings: () => Promise<void>
   addMeeting: (meeting: Meeting) => void
   updateMeeting: (id: string, updates: Partial<Meeting>) => void
+  deleteMeeting: (id: string) => Promise<void>
 }
 
 export const useMeetingStore = create<MeetingState>((set, get) => ({
@@ -46,5 +47,14 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         m.id === id ? { ...m, ...updates } : m
       ),
     })
+  },
+
+  deleteMeeting: async (id) => {
+    const backendUrl = await window.electronAPI?.getBackendUrl()
+    if (!backendUrl) return
+    const res = await fetch(`${backendUrl}/api/meetings/${id}`, { method: 'DELETE' })
+    if (res.ok) {
+      set({ meetings: get().meetings.filter((m) => m.id !== id) })
+    }
   },
 }))

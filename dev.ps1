@@ -44,6 +44,7 @@ Write-Host "[OK]  Python: $(& $venvPython --version)" -ForegroundColor DarkGray
 # ========== 3. Start Backend ==========
 if (-not $FrontendOnly) {
     Write-Host "[...] Starting Python backend (http://127.0.0.1:8765)" -ForegroundColor Cyan
+    $env:BACKEND_PORT = "8765"
     Start-Process -FilePath $venvPython -ArgumentList "$root\backend\main.py" -NoNewWindow
     Start-Sleep -Seconds 2
 }

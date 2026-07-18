@@ -10,27 +10,12 @@ from typing import Optional
 import httpx
 import urllib3
 
+from llm.prompts import DEFAULT_SYSTEM_PROMPT, EN_SYSTEM_PROMPT
+
 # 禁用 SSL 验证警告（企业网络环境）
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger("memo.llm")
-
-# 默认 Prompt 模板
-DEFAULT_SYSTEM_PROMPT = """你是一个专业的会议纪要助手。请根据提供的会议转写文本，生成结构化的会议纪要。
-
-要求：
-1. 摘要：用 2-3 句话概括会议核心内容
-2. 关键讨论点：列出 3-5 个最重要的讨论话题，每个 1-2 句话
-3. 行动项：列出所有明确的待办事项，每个包含负责人和截止时间（如提及）
-4. 下一步：总结后续计划和跟进事项
-
-请严格按照以下 JSON 格式输出：
-{
-  "summary": "会议摘要...",
-  "key_points": ["讨论点1", "讨论点2", ...],
-  "action_items": ["行动项1", "行动项2", ...],
-  "next_steps": "下一步计划..."
-}"""
 
 
 class LLMSummarizer:
@@ -40,6 +25,7 @@ class LLMSummarizer:
         self.api_key: Optional[str] = None
         self.base_url: str = "https://api.openai.com/v1"
         self.model: str = "gpt-4o-mini"
+        self.output_language: str = "en"
         self.call_count: int = 0
         self.estimated_cost: float = 0.0
 
@@ -51,9 +37,11 @@ class LLMSummarizer:
         rows = await cursor.fetchall()
         settings = {row[0]: row[1] for row in rows}
 
-        self.api_key = settings.get("api_key", os.environ.get("MEMO_API_KEY", ""))
-        self.base_url = settings.get("api_base_url", os.environ.get("MEMO_API_BASE_URL", "https://api.openai.com/v1"))
+        # LLM 专用配置，优先使用 llm_api_key/llm_api_base_url，回退到通用 api_key/api_base_url
+        self.api_key = settings.get("llm_api_key") or settings.get("api_key", os.environ.get("MEMO_API_KEY", ""))
+        self.base_url = settings.get("llm_api_base_url") or settings.get("api_base_url", os.environ.get("MEMO_API_BASE_URL", "https://api.openai.com/v1"))
         self.model = settings.get("llm_model", "gpt-4o-mini")
+        self.output_language = settings.get("llm_output_language", "en")
 
     async def _ensure_config(self):
         """确保配置已加载"""
@@ -91,8 +79,8 @@ class LLMSummarizer:
                 json={
                     "model": self.model,
                     "messages": [
-                        {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"请为以下会议生成纪要：\n\n{text}"},
+                        {"role": "system", "content": self._get_system_prompt()},
+                        {"role": "user", "content": self._get_user_prompt(text)},
                     ],
                     "temperature": 0.3,
                     "max_tokens": 2000,
@@ -130,10 +118,19 @@ class LLMSummarizer:
         if len(chunks) > 8:
             chunks = chunks[:8]
 
+        is_en = self.output_language == "en"
+
         # 逐段摘要
         summaries = []
         for i, chunk in enumerate(chunks):
-            prompt = f"""请为以下会议转写片段生成简要摘要（这是第 {i+1}/{len(chunks)} 段）：
+            if is_en:
+                prompt = f"""Please generate a brief summary for this meeting transcript segment (segment {i+1}/{len(chunks)}):
+
+{chunk}
+
+Summarize the key points of this segment in 2-3 sentences."""
+            else:
+                prompt = f"""请为以下会议转写片段生成简要摘要（这是第 {i+1}/{len(chunks)} 段）：
 
 {chunk}
 
@@ -145,12 +142,29 @@ class LLMSummarizer:
         # 汇总所有摘要
         if summaries:
             combined = "\n\n---\n\n".join(summaries)
-            final_prompt = f"""以下是会议各片段的摘要汇总，请整合为完整的会议纪要：
+            if is_en:
+                final_prompt = f"""Below are summaries of each segment of the meeting. Please consolidate them into a complete meeting minutes:
+
+{combined}"""
+            else:
+                final_prompt = f"""以下是会议各片段的摘要汇总，请整合为完整的会议纪要：
 
 {combined}"""
             return await self._call_llm(final_prompt)
 
         return self._fallback_response()
+
+    def _get_system_prompt(self) -> str:
+        """根据输出语言选择对应的 system prompt"""
+        if self.output_language == "en":
+            return EN_SYSTEM_PROMPT
+        return DEFAULT_SYSTEM_PROMPT
+
+    def _get_user_prompt(self, text: str) -> str:
+        """根据输出语言生成对应的 user prompt"""
+        if self.output_language == "en":
+            return f"Please generate minutes for the following meeting:\n\n{text}"
+        return f"请为以下会议生成纪要：\n\n{text}"
 
     async def _call_llm_for_chunk(self, prompt: str) -> Optional[str]:
         """针对单个片段调用 LLM"""

@@ -35,8 +35,9 @@ class STTEngine:
         rows = await cursor.fetchall()
         settings = {row[0]: row[1] for row in rows}
 
-        self.api_key = settings.get("api_key", os.environ.get("MEMO_API_KEY", ""))
-        self.base_url = settings.get("api_base_url", os.environ.get("MEMO_API_BASE_URL", "https://api.openai.com/v1"))
+        # STT 专用配置，stt_api_base_url 为空时默认使用 OpenAI（不回退到通用 api_base_url）
+        self.api_key = settings.get("stt_api_key") or os.environ.get("MEMO_API_KEY", "")
+        self.base_url = settings.get("stt_api_base_url") or os.environ.get("MEMO_STT_API_BASE_URL", "https://api.openai.com/v1")
         self.model = settings.get("stt_model", "whisper-1")
         self.language = settings.get("stt_language", "zh")
 
@@ -68,17 +69,18 @@ class STTEngine:
 
             wav_buffer.seek(0)
 
-            # 调用 OpenAI Whisper API
+            # 调用语音转写 API
             async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+                data = {"model": self.model}
+                # language 为 auto 或空时不传，由 API 自动检测
+                if self.language and self.language != "auto":
+                    data["language"] = self.language
+
                 response = await client.post(
                     f"{self.base_url}/audio/transcriptions",
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     files={"file": ("audio.wav", wav_buffer, "audio/wav")},
-                    data={
-                        "model": self.model,
-                        "language": self.language,
-                        "response_format": "json",
-                    },
+                    data=data,
                 )
 
                 if response.status_code == 200:

@@ -10,9 +10,10 @@ export interface Meeting {
 interface MeetingCardProps {
   meeting: Meeting
   onClick: () => void
+  onDelete?: () => void
 }
 
-export default function MeetingCard({ meeting, onClick }: MeetingCardProps) {
+export default function MeetingCard({ meeting, onClick, onDelete }: MeetingCardProps) {
   const formatDate = (dateStr: string): string => {
     const d = new Date(dateStr)
     return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
@@ -49,6 +50,18 @@ export default function MeetingCard({ meeting, onClick }: MeetingCardProps) {
       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${status.color}`}>
         {status.label}
       </span>
+      {onDelete && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          className="text-gray-300 hover:text-red-500 transition-colors text-sm leading-none px-1"
+          title="删除"
+        >
+          ×
+        </button>
+      )}
     </div>
   )
 }

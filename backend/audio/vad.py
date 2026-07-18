@@ -53,7 +53,7 @@ class VoiceActivityDetector:
             return False
 
         rms = math.sqrt(sum(s * s for s in samples) / len(samples))
-        return rms > 500  # 能量阈值
+        return rms > 300  # 能量阈值（int16 RMS）
 
     async def detect(self, audio_bytes: bytes) -> bool:
         """检测音频块是否包含语音"""
@@ -72,8 +72,8 @@ class VoiceActivityDetector:
                 # VAD 检测
                 speech_prob = self._model(audio_tensor, self._sample_rate).item()
                 return speech_prob > self.threshold
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Silero VAD failed, falling back to energy-based: {e}")
 
         return self._energy_based_vad(audio_bytes)
 
