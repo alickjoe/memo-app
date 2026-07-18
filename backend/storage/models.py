@@ -9,7 +9,7 @@ from datetime import datetime
 @dataclass
 class Meeting:
     id: str
-    title: str = "未命名会议"
+    title: str = "Untitled Meeting"
     audio_path: Optional[str] = None
     duration_seconds: int = 0
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())

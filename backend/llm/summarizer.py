@@ -221,7 +221,7 @@ Summarize the key points of this segment in 2-3 sentences."""
     def _fallback_response(self) -> dict:
         """LLM 不可用时的回退响应"""
         return {
-            "summary": "纪要生成失败，请检查 API 配置后重试。",
+            "summary": "Minutes generation failed. Please check the API configuration and try again.",
             "key_points": [],
             "action_items": [],
             "next_steps": "",

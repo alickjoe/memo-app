@@ -32,7 +32,7 @@ async def init_db():
     await db.execute("""
         CREATE TABLE IF NOT EXISTS meetings (
             id TEXT PRIMARY KEY,
-            title TEXT DEFAULT '未命名会议',
+            title TEXT DEFAULT 'Untitled Meeting',
             audio_path TEXT,
             duration_seconds INTEGER DEFAULT 0,
             created_at DATETIME,

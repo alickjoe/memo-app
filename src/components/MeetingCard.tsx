@@ -1,3 +1,6 @@
+import { useTranslation } from 'react-i18next'
+import i18n from '../i18n/config'
+
 export interface Meeting {
   id: string
   title: string
@@ -14,9 +17,12 @@ interface MeetingCardProps {
 }
 
 export default function MeetingCard({ meeting, onClick, onDelete }: MeetingCardProps) {
+  const { t } = useTranslation()
+
   const formatDate = (dateStr: string): string => {
     const d = new Date(dateStr)
-    return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+    const locale = i18n.language === 'zh' ? 'zh-CN' : 'en-US'
+    return d.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
   }
 
   const formatDuration = (seconds: number): string => {
@@ -26,10 +32,10 @@ export default function MeetingCard({ meeting, onClick, onDelete }: MeetingCardP
   }
 
   const statusMap: Record<string, { label: string; color: string }> = {
-    recording: { label: '录制中', color: 'bg-red-100 text-red-700' },
-    processing: { label: '处理中', color: 'bg-yellow-100 text-yellow-700' },
-    done: { label: '已完成', color: 'bg-green-100 text-green-700' },
-    error: { label: '失败', color: 'bg-gray-100 text-gray-500' },
+    recording: { label: t('meetingCard.recording'), color: 'bg-red-100 text-red-700' },
+    processing: { label: t('meetingCard.processing'), color: 'bg-yellow-100 text-yellow-700' },
+    done: { label: t('meetingCard.done'), color: 'bg-green-100 text-green-700' },
+    error: { label: t('meetingCard.error'), color: 'bg-gray-100 text-gray-500' },
   }
 
   const status = statusMap[meeting.status] || statusMap.processing
@@ -41,7 +47,7 @@ export default function MeetingCard({ meeting, onClick, onDelete }: MeetingCardP
     >
       <div className="flex-1 min-w-0">
         <h3 className="text-sm font-medium text-gray-900 truncate">
-          {meeting.title || '未命名会议'}
+          {meeting.title || t('meetingCard.untitled')}
         </h3>
         <p className="text-xs text-gray-400 mt-0.5">
           {formatDate(meeting.created_at)} &middot; {formatDuration(meeting.duration_seconds)}
@@ -57,7 +63,7 @@ export default function MeetingCard({ meeting, onClick, onDelete }: MeetingCardP
             onDelete()
           }}
           className="text-gray-300 hover:text-red-500 transition-colors text-sm leading-none px-1"
-          title="删除"
+          title={t('meetingCard.delete')}
         >
           ×
         </button>

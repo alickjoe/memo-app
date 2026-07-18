@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 interface TranscriptSegment {
   speaker: string
   text: string
@@ -9,10 +11,11 @@ interface TranscriptStreamProps {
 }
 
 export default function TranscriptStream({ segments }: TranscriptStreamProps) {
+  const { t } = useTranslation()
   if (segments.length === 0) {
     return (
       <div className="text-center text-gray-400 text-sm py-8">
-        等待语音输入...
+        {t('transcript.waitingAudio')}
       </div>
     )
   }

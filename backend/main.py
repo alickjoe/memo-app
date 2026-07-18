@@ -124,7 +124,7 @@ async def start_recording(request: dict = None):
         db = await get_db()
         await db.execute(
             "INSERT INTO meetings (id, title, created_at, status) VALUES (?, ?, ?, ?)",
-            (meeting_id, "未命名会议", datetime.now().isoformat(), "recording"),
+            (meeting_id, "Untitled Meeting", datetime.now().isoformat(), "recording"),
         )
         await db.commit()
 
@@ -398,7 +398,7 @@ async def import_audio(request: dict):
     db = await get_db()
     await db.execute(
         "INSERT INTO meetings (id, title, audio_path, created_at, status) VALUES (?, ?, ?, ?, ?)",
-        (meeting_id, f"导入: {os.path.basename(file_path)}", file_path, datetime.now().isoformat(), "processing"),
+        (meeting_id, f"Imported: {os.path.basename(file_path)}", file_path, datetime.now().isoformat(), "processing"),
     )
     await db.commit()
 
