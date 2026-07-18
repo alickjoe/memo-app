@@ -41,8 +41,3 @@ nsis:
   shortcutName: Memo
   deleteAppDataOnUninstall: false
   runAfterFinish: true
-
-publish:
-  provider: github
-  owner: your-github-username
-  repo: memo-app
