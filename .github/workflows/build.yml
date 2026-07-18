@@ -47,7 +47,7 @@ jobs:
         run: npm run build
 
       - name: Build Electron installer
-        run: npm run electron:build
+        run: npx electron-builder --publish never
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
