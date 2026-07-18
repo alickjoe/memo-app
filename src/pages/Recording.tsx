@@ -34,7 +34,7 @@ export default function Recording() {
 
     async function connectWS() {
       const backendUrl = await window.electronAPI?.getBackendUrl()
-      if (cancelled) return
+      if (cancelled || !backendUrl) return
       const wsUrl = backendUrl.replace('http', 'ws') + `/ws/transcript/${id}`
       ws = new WebSocket(wsUrl)
 

@@ -115,7 +115,7 @@ export default function MeetingDetail() {
     let cancelled = false
     const connectWs = async () => {
       const backendUrl = await window.electronAPI?.getBackendUrl()
-      if (cancelled) return
+      if (cancelled || !backendUrl) return
       const wsUrl = backendUrl.replace('http', 'ws') + `/ws/transcript/${id}`
       ws = new WebSocket(wsUrl)
       ws.onmessage = (event) => {
