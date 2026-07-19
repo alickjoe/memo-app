@@ -604,10 +604,10 @@ async def install_torch():
         }
 
     try:
-        # 使用 CPU 版 torch，体积更小
+        # 使用 CPU 版 torch + torchaudio（Silero VAD 需要 torchaudio）
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "torch", "--index-url",
-             "https://download.pytorch.org/whl/cpu"],
+            [sys.executable, "-m", "pip", "install", "torch", "torchaudio",
+             "--index-url", "https://download.pytorch.org/whl/cpu"],
             capture_output=True, text=True, timeout=600,
         )
         if result.returncode == 0:

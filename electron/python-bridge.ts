@@ -68,12 +68,12 @@ function findSystemPython(): string | null {
   return null
 }
 
-// 检测指定 Python 是否安装了 torch
+// 检测指定 Python 是否安装了 torch + torchaudio（Silero VAD 所需）
 function detectTorchAvailable(pythonPath: string): boolean {
   try {
     const result = spawnSync(
       pythonPath,
-      ['-c', 'import torch; print(torch.__version__)'],
+      ['-c', 'import torch, torchaudio; print(torch.__version__)'],
       { timeout: 30000 },
     )
     if (result.status !== 0) {
@@ -256,9 +256,9 @@ export function installTorch(): Promise<{ success: boolean; message: string }> {
       return
     }
 
-    console.log(`[Python Bridge] Installing torch via ${pythonPath}...`)
+    console.log(`[Python Bridge] Installing torch + torchaudio via ${pythonPath}...`)
     const proc = spawn(pythonPath, [
-      '-m', 'pip', 'install', 'torch',
+      '-m', 'pip', 'install', 'torch', 'torchaudio',
       '--index-url', 'https://download.pytorch.org/whl/cpu',
     ])
 
@@ -269,10 +269,10 @@ export function installTorch(): Promise<{ success: boolean; message: string }> {
 
     proc.on('close', (code: number | null) => {
       if (code === 0) {
-        // 安装后验证 torch 是否真正可导入
-        console.log('[Python Bridge] pip install completed, verifying torch import...')
+        // 安装后验证 torch 和 torchaudio 是否真正可导入
+        console.log('[Python Bridge] pip install completed, verifying torch + torchaudio import...')
         if (detectTorchAvailable(pythonPath)) {
-          console.log('[Python Bridge] PyTorch installed and verified')
+          console.log('[Python Bridge] PyTorch + torchaudio installed and verified')
           resolve({ success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' })
         } else {
           resolve({ success: false, message: 'Installation completed but torch import failed. Check pip output.' })

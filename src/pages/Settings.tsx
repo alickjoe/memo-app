@@ -425,7 +425,7 @@ export default function Settings() {
                 </div>
               )}
               <div className="flex gap-2">
-                {!torchStatus.available && torchStatus.vad_engine === 'energy' && (
+                {torchStatus.vad_engine === 'energy' && (
                   <button
                     onClick={handleInstallTorch}
                     disabled={torchInstalling || torchRestarting}
