@@ -109,7 +109,7 @@ class STTEngine:
         校验规则：
         1. 不为空或纯标点符号
         2. 有效字符（中文 + 英文 + 数字）占比 >= 30%
-        3. 输出长度与音频时长匹配（不超过 20 字/秒，防止幻觉）
+        3. 输出长度与音频时长匹配（不超过 35 字/秒，防止幻觉）
         """
         text = await self.transcribe(audio_bytes)
         if not text:
@@ -124,7 +124,7 @@ class STTEngine:
             r'^[\s\u3000-\u303f\uff00-\uffef，。！？、；：""''…—～·　\-\.,!?;:"\'()\[\]{}<>]+$'
         )
         if punctuation_only_pattern.match(text):
-            logger.debug("Validation rejected: punctuation-only output: %s", text[:80])
+            logger.info("Validation rejected: punctuation-only output: %s", text[:80])
             return None
 
         # 校验2: 有效字符占比检查
@@ -135,7 +135,7 @@ class STTEngine:
         total_chars = len(text)
 
         if total_chars > 0 and meaningful_chars / total_chars < 0.3:
-            logger.debug(
+            logger.info(
                 "Validation rejected: low meaningful char ratio (%.1f%%), "
                 "zh=%d en=%d digits=%d total=%d, text=%s",
                 meaningful_chars / total_chars * 100,
@@ -147,8 +147,8 @@ class STTEngine:
         # 校验3: 长度一致性
         duration_seconds = len(audio_bytes) / (16000 * 2)
         word_count = len(text)
-        if duration_seconds > 0 and word_count / duration_seconds > 20:
-            logger.debug(
+        if duration_seconds > 0 and word_count / duration_seconds > 35:
+            logger.info(
                 "Validation rejected: too many chars (%.1f chars/s, dur=%.1fs, len=%d)",
                 word_count / duration_seconds, duration_seconds, word_count,
             )

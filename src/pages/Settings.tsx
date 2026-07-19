@@ -20,6 +20,13 @@ export default function Settings() {
     audio_input_device: '',
     audio_output_device: '',
     ui_language: 'en',
+    recording_segmentation_strategy: 'hybrid',
+    recording_max_segment_duration: '15',
+    recording_fixed_chunk_duration: '30',
+    recording_vad_threshold: '0.6',
+    recording_vad_silence_frames: '8',
+    recording_vad_speech_confirm_frames: '3',
+    recording_vad_hangover_frames: '3',
   })
   const [saved, setSaved] = useState(false)
   const [audioDevices, setAudioDevices] = useState<{ id: string; name: string; is_loopback: boolean }[]>([])
@@ -232,6 +239,86 @@ export default function Settings() {
                     <option key={d.id} value={d.id}>{d.name}</option>
                   ))}
               </select>
+            </div>
+          </div>
+        </section>
+
+        {/* 录音默认配置 */}
+        <section className="mb-8">
+          <h2 className="text-sm font-semibold text-gray-700 mb-4">{t('settings.recordingDefaults')}</h2>
+          <p className="text-xs text-gray-400 mb-4">
+            {t('settings.recordingDefaultsDesc')}
+          </p>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm text-gray-500 mb-1">{t('settings.recordingSegmentationStrategy')}</label>
+              <select
+                value={settings.recording_segmentation_strategy}
+                onChange={(e) => setSettings({ ...settings, recording_segmentation_strategy: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+              >
+                <option value="vad">{t('recording.strategyVad')}</option>
+                <option value="hybrid">{t('recording.strategyHybrid')}</option>
+                <option value="fixed">{t('recording.strategyFixed')}</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-500 mb-1">{t('settings.recordingMaxSegmentDuration')}</label>
+              <input
+                type="number"
+                min={5}
+                max={60}
+                value={settings.recording_max_segment_duration}
+                onChange={(e) => setSettings({ ...settings, recording_max_segment_duration: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-500 mb-1">{t('settings.recordingFixedChunkDuration')}</label>
+              <input
+                type="number"
+                min={10}
+                max={120}
+                value={settings.recording_fixed_chunk_duration}
+                onChange={(e) => setSettings({ ...settings, recording_fixed_chunk_duration: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-500 mb-1">{t('settings.recordingVadThreshold')}</label>
+              <input
+                type="number"
+                min={0.3}
+                max={0.9}
+                step={0.1}
+                value={settings.recording_vad_threshold}
+                onChange={(e) => setSettings({ ...settings, recording_vad_threshold: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm text-gray-500 mb-1">{t('settings.recordingVadSilenceFrames')}</label>
+                <input
+                  type="number"
+                  min={3}
+                  max={20}
+                  value={settings.recording_vad_silence_frames}
+                  onChange={(e) => setSettings({ ...settings, recording_vad_silence_frames: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-500 mb-1">{t('settings.recordingVadHangoverFrames')}</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={settings.recording_vad_hangover_frames}
+                  onChange={(e) => setSettings({ ...settings, recording_vad_hangover_frames: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+                />
+              </div>
             </div>
           </div>
         </section>

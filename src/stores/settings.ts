@@ -14,6 +14,14 @@ interface AppSettings {
   audio_input_device: string
   audio_output_device: string
   ui_language: string
+  // 录音默认配置
+  recording_segmentation_strategy: string
+  recording_max_segment_duration: string
+  recording_fixed_chunk_duration: string
+  recording_vad_threshold: string
+  recording_vad_silence_frames: string
+  recording_vad_speech_confirm_frames: string
+  recording_vad_hangover_frames: string
 }
 
 interface SettingsState {
@@ -38,6 +46,13 @@ const defaultSettings: AppSettings = {
   audio_input_device: '',
   audio_output_device: '',
   ui_language: 'en',
+  recording_segmentation_strategy: 'hybrid',
+  recording_max_segment_duration: '15',
+  recording_fixed_chunk_duration: '30',
+  recording_vad_threshold: '0.6',
+  recording_vad_silence_frames: '8',
+  recording_vad_speech_confirm_frames: '3',
+  recording_vad_hangover_frames: '3',
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

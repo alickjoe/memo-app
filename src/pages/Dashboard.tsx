@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import i18n from '../i18n/config'
 import MeetingCard from '../components/MeetingCard'
+import StartRecordingDialog from '../components/StartRecordingDialog'
+import type { RecordingConfig } from '../components/StartRecordingDialog'
 import { useMeetingStore } from '../stores/meetings'
 import { useSettingsStore } from '../stores/settings'
 import type { Meeting } from '../stores/meetings'
@@ -13,6 +15,7 @@ export default function Dashboard() {
   const { meetings, fetchMeetings, loading, deleteMeeting } = useMeetingStore()
   const { settings, fetchSettings } = useSettingsStore()
   const [dragOver, setDragOver] = useState(false)
+  const [showRecordDialog, setShowRecordDialog] = useState(false)
 
   useEffect(() => {
     fetchMeetings()
@@ -27,15 +30,32 @@ export default function Dashboard() {
   }, [settings.ui_language])
 
   const handleStartRecording = async () => {
+    setShowRecordDialog(true)
+  }
+
+  const getDefaultConfig = (): RecordingConfig => {
+    const s = settings
+    return {
+      segmentation_strategy: s.recording_segmentation_strategy || 'hybrid',
+      max_segment_duration: Number(s.recording_max_segment_duration || '15'),
+      fixed_chunk_duration: Number(s.recording_fixed_chunk_duration || '30'),
+      vad_threshold: Number(s.recording_vad_threshold || '0.6'),
+      vad_silence_frames: Number(s.recording_vad_silence_frames || '8'),
+      vad_speech_confirm_frames: Number(s.recording_vad_speech_confirm_frames || '3'),
+      vad_hangover_frames: Number(s.recording_vad_hangover_frames || '3'),
+    }
+  }
+
+  const handleStartWithConfig = async (dialogConfig: {
+    config: RecordingConfig
+  }) => {
+    setShowRecordDialog(false)
     try {
       const backendUrl = await window.electronAPI?.getBackendUrl()
       const res = await fetch(`${backendUrl}/api/record/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          loopback_device_id: settings.audio_output_device || null,
-          input_device_id: settings.audio_input_device || null,
-        }),
+        body: JSON.stringify({ config: dialogConfig.config }),
       })
       if (res.ok) {
         const data = await res.json()
@@ -163,6 +183,15 @@ export default function Dashboard() {
           )}
         </div>
       </main>
+
+      {/* 录音配置弹窗 */}
+      {showRecordDialog && (
+        <StartRecordingDialog
+          defaultConfig={getDefaultConfig()}
+          onStart={handleStartWithConfig}
+          onCancel={() => setShowRecordDialog(false)}
+        />
+      )}
     </div>
   )
 }
