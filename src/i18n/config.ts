@@ -139,6 +139,7 @@ const resources = {
         vadRestarting: 'Restarting...',
         vadRestartDone: 'Backend restarted successfully.',
         vadRestartFailed: 'Backend restart failed',
+        vadDegradedReason: 'Degraded reason',
       },
       meetingCard: {
         recording: 'Recording',
@@ -301,6 +302,7 @@ const resources = {
         vadRestarting: '重启中...',
         vadRestartDone: '后端已成功重启。',
         vadRestartFailed: '后端重启失败',
+        vadDegradedReason: '降级原因',
       },
       meetingCard: {
         recording: '录制中',

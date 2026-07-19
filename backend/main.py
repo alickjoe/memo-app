@@ -561,8 +561,13 @@ async def get_torch_status():
     import sys
     is_frozen = getattr(sys, 'frozen', False)
     vad_engine = "energy"
+    vad_error: Optional[str] = None
     if vad is not None:
-        vad_engine = "silero" if not vad.is_degraded else "energy"
+        if vad.is_degraded:
+            vad_engine = "energy"
+            vad_error = vad.last_error
+        else:
+            vad_engine = "silero"
     try:
         import torch
         version = torch.__version__
@@ -573,6 +578,7 @@ async def get_torch_status():
             "cuda_available": cuda_available,
             "backend_mode": "frozen" if is_frozen else "source",
             "vad_engine": vad_engine,
+            "vad_error": vad_error,
         }
     except ImportError:
         return {
@@ -581,6 +587,7 @@ async def get_torch_status():
             "cuda_available": False,
             "backend_mode": "frozen" if is_frozen else "source",
             "vad_engine": vad_engine,
+            "vad_error": vad_error,
         }
 
 

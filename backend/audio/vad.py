@@ -37,11 +37,17 @@ class VoiceActivityDetector:
         self._consecutive_silence_count = 0
         self._is_in_speech = False
         self._model_degraded = False  # 降级标记：True 表示 Silero 加载失败，使用能量回退
+        self._last_error: str = ""    # 最后一次加载失败的错误信息
 
     @property
     def is_degraded(self) -> bool:
         """是否处于降级模式（使用能量 VAD 而非 Silero）"""
         return self._model_degraded
+
+    @property
+    def last_error(self) -> str:
+        """最后一次 Silero VAD 加载失败的错误信息"""
+        return self._last_error
 
     async def _load_model(self):
         """延迟加载 VAD 模型"""
@@ -63,6 +69,7 @@ class VoiceActivityDetector:
                 logger.info("Silero VAD model loaded")
             except Exception as e:
                 self._model_degraded = True
+                self._last_error = str(e)
                 logger.warning(
                     "Failed to load Silero VAD: %s, falling back to energy-based VAD. "
                     "Energy-based VAD is less accurate and may produce false positives. "

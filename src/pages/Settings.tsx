@@ -35,6 +35,7 @@ export default function Settings() {
     version: string | null
     backend_mode: string
     vad_engine: string
+    vad_error: string | null
   } | null>(null)
   const [torchInstalling, setTorchInstalling] = useState(false)
   const [torchMessage, setTorchMessage] = useState('')
@@ -413,13 +414,18 @@ export default function Settings() {
                   <span className="text-xs text-gray-400">PyTorch {torchStatus.version}</span>
                 )}
               </div>
+              {torchStatus.available && torchStatus.vad_engine === 'energy' && torchStatus.vad_error && (
+                <div className="text-xs px-3 py-2 bg-yellow-50 text-yellow-700 rounded">
+                  {t('settings.vadDegradedReason')}: {torchStatus.vad_error}
+                </div>
+              )}
               {torchMessage && (
                 <div className={`text-xs px-3 py-2 rounded ${torchMessage.includes(t('settings.vadInstallSuccess')) ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
                   {torchMessage}
                 </div>
               )}
               <div className="flex gap-2">
-                {torchStatus.vad_engine === 'energy' && (
+                {!torchStatus.available && torchStatus.vad_engine === 'energy' && (
                   <button
                     onClick={handleInstallTorch}
                     disabled={torchInstalling || torchRestarting}
