@@ -1,6 +1,7 @@
 """
 WASAPI loopback 音频捕获模块
 支持系统音频（loopback）和麦克风输入双通道捕获
+支持设备信号监控与自动切换
 """
 import asyncio
 import logging
@@ -9,7 +10,7 @@ import wave
 import os
 import time
 import warnings
-from typing import Optional
+from typing import Optional, Callable
 from dataclasses import dataclass
 
 import soundcard as sc
@@ -19,6 +20,10 @@ import numpy as np
 warnings.filterwarnings("ignore", message="data discontinuity in recording")
 
 logger = logging.getLogger("memo.audio")
+
+# 信号监控常量
+SIGNAL_THRESHOLD_RMS = 0.001     # RMS 低于此值视为无信号
+NO_SIGNAL_CHUNKS_BEFORE_SCAN = 50  # 连续无信号块数触发设备扫描 (50 x 0.1s = 5s)
 
 
 @dataclass
@@ -30,12 +35,23 @@ class AudioDevice:
     sample_rate: int
 
 
+@dataclass
+class DeviceSignalInfo:
+    """设备信号检测结果"""
+    device_id: str
+    device_name: str
+    has_signal: bool
+    rms_level: float
+    is_loopback: bool
+
+
 class AudioCapture:
-    """Windows 音频捕获器"""
+    """Windows 音频捕获器，支持设备信号监控与自动切换"""
 
     def __init__(self, sample_rate: int = 16000, chunk_duration: float = 0.1):
         self.sample_rate = sample_rate
         self.chunk_size = int(sample_rate * chunk_duration)
+        self.chunk_duration = chunk_duration
         self._is_active = False
         self._is_paused = False
         self._meeting_id: Optional[str] = None
@@ -43,6 +59,10 @@ class AudioCapture:
         self._loopback_mic: Optional[sc.Microphone] = None
         self._input_mic: Optional[sc.Microphone] = None
         self._thread: Optional[threading.Thread] = None
+
+        # 设备信息缓存
+        self._loopback_device_id: Optional[str] = None
+        self._input_device_id: Optional[str] = None
 
         # 音频缓冲区
         self._buffer = bytearray()
@@ -54,6 +74,96 @@ class AudioCapture:
 
         # loopback 录制锁，防止超时线程与下次录制竞争
         self._loopback_lock = threading.Lock()
+
+        # 信号监控状态
+        self._loopback_no_signal_count = 0
+        self._mic_no_signal_count = 0
+        self._current_loopback_rms = 0.0
+        self._current_mic_rms = 0.0
+
+        # 设备切换回调: async callable(device_type: str, old_name: str, new_name: str)
+        self._on_device_switched: Optional[Callable] = None
+        self._device_switch_lock = threading.Lock()
+
+    def set_device_switch_callback(self, callback: Optional[Callable]):
+        """设置设备切换回调（异步函数），用于通知前端"""
+        self._on_device_switched = callback
+
+    @property
+    def loopback_device_name(self) -> str:
+        return self._loopback_mic.name if self._loopback_mic else "none"
+
+    @property
+    def input_device_name(self) -> str:
+        return self._input_mic.name if self._input_mic else "none"
+
+    @property
+    def signal_stats(self) -> dict:
+        """当前信号统计"""
+        return {
+            "loopback_rms": round(self._current_loopback_rms, 6),
+            "mic_rms": round(self._current_mic_rms, 6),
+            "loopback_no_signal_chunks": self._loopback_no_signal_count,
+            "mic_no_signal_chunks": self._mic_no_signal_count,
+        }
+
+    def scan_devices_for_signal(self, device_type: str = "loopback", duration: float = 2.0) -> list[DeviceSignalInfo]:
+        """扫描所有设备，检测哪些有信号
+        
+        Args:
+            device_type: "loopback" | "input" | "all"
+            duration: 每个设备检测时长（秒）
+        
+        Returns:
+            按 RMS 降序排列的设备信号列表
+        """
+        results = []
+        try:
+            if device_type in ("loopback", "all"):
+                loopback_mics = [m for m in sc.all_microphones(include_loopback=True)
+                                if "loopback" in m.name.lower()]
+                for mic in loopback_mics:
+                    info = self._test_device_signal(mic, duration)
+                    results.append(info)
+
+            if device_type in ("input", "all"):
+                input_mics = sc.all_microphones(include_loopback=False)
+                for mic in input_mics:
+                    info = self._test_device_signal(mic, duration)
+                    results.append(info)
+        except Exception as e:
+            logger.warning(f"Device scan failed: {e}")
+
+        # 按 RMS 降序
+        results.sort(key=lambda x: x.rms_level, reverse=True)
+        return results
+
+    def _test_device_signal(self, mic: sc.Microphone, duration: float) -> DeviceSignalInfo:
+        """测试单个设备是否有信号"""
+        try:
+            num_frames = int(self.sample_rate * duration)
+            with mic.recorder(samplerate=self.sample_rate) as rec:
+                data = rec.record(numframes=num_frames)
+                if data.ndim > 1:
+                    data = data.mean(axis=1)
+                rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
+                has_signal = rms > SIGNAL_THRESHOLD_RMS
+                return DeviceSignalInfo(
+                    device_id=mic.id,
+                    device_name=mic.name,
+                    has_signal=has_signal,
+                    rms_level=round(rms, 6),
+                    is_loopback="loopback" in mic.name.lower(),
+                )
+        except Exception as e:
+            logger.debug(f"Test device {mic.name} failed: {e}")
+            return DeviceSignalInfo(
+                device_id=mic.id,
+                device_name=mic.name,
+                has_signal=False,
+                rms_level=0.0,
+                is_loopback="loopback" in mic.name.lower(),
+            )
 
     def list_devices(self) -> list[dict]:
         """列出所有音频设备"""
@@ -88,6 +198,14 @@ class AudioCapture:
         self._is_active = True
         self._is_paused = False
         self._buffer = bytearray()
+        self._loopback_no_signal_count = 0
+        self._mic_no_signal_count = 0
+        self._current_loopback_rms = 0.0
+        self._current_mic_rms = 0.0
+
+        # 保存请求的设备 ID
+        self._loopback_device_id = loopback_device_id
+        self._input_device_id = input_device_id
 
         # 查找 loopback 设备（系统音频）
         try:
@@ -237,7 +355,7 @@ class AudioCapture:
                         else:
                             mixed = mic_data.astype(np.float32)
 
-                        # 每 100 块报告一次信号强度
+                        # 每 100 块报告一次信号强度，并更新监控状态
                         if chunk_count % 100 == 0:
                             mic_rms = float(np.sqrt(np.mean(mic_data.astype(np.float32) ** 2)))
                             mixed_rms = float(np.sqrt(np.mean(mixed ** 2)))
@@ -245,6 +363,29 @@ class AudioCapture:
                                 "Signal level: mic_rms=%.4f mixed_rms=%.4f, loopback=%s",
                                 mic_rms, mixed_rms, "yes" if loopback_has_data else "timeout",
                             )
+
+                        # 更新信号监控计数器
+                        self._current_mic_rms = float(np.sqrt(np.mean(mic_data.astype(np.float32) ** 2)))
+                        if loopback_has_data:
+                            self._current_loopback_rms = float(np.sqrt(np.mean(loopback_data.astype(np.float32) ** 2)))
+                        else:
+                            self._current_loopback_rms = 0.0
+
+                        if self._current_loopback_rms < SIGNAL_THRESHOLD_RMS:
+                            self._loopback_no_signal_count += 1
+                        else:
+                            self._loopback_no_signal_count = 0
+
+                        if self._current_mic_rms < SIGNAL_THRESHOLD_RMS:
+                            self._mic_no_signal_count += 1
+                        else:
+                            self._mic_no_signal_count = 0
+
+                        # 设备信号缺失自动切换检测
+                        if self._loopback_no_signal_count >= NO_SIGNAL_CHUNKS_BEFORE_SCAN:
+                            self._try_auto_switch_device("loopback")
+                        if self._mic_no_signal_count >= NO_SIGNAL_CHUNKS_BEFORE_SCAN:
+                            self._try_auto_switch_device("input")
 
                         # 限幅
                         mixed = np.clip(mixed, -1.0, 1.0)
@@ -279,6 +420,73 @@ class AudioCapture:
                 "Capture loop finished: %d chunks, %d loopback timeouts",
                 chunk_count, loopback_timeouts,
             )
+
+    def _try_auto_switch_device(self, device_type: str):
+        """检测到设备无信号时，尝试自动切换到有信号的设备"""
+        if not self._device_switch_lock.acquire(blocking=False):
+            return  # 已有切换进行中
+
+        try:
+            logger.warning(
+                "Device %s has no signal for %d chunks, scanning alternatives...",
+                device_type, NO_SIGNAL_CHUNKS_BEFORE_SCAN,
+            )
+            results = self.scan_devices_for_signal(device_type, duration=2.0)
+
+            current_mic = self._loopback_mic if device_type == "loopback" else self._input_mic
+            current_id = current_mic.id if current_mic else None
+
+            # 找到有信号且不同于当前设备的设备
+            for info in results:
+                if info.has_signal and info.device_id != current_id:
+                    old_name = current_mic.name if current_mic else "unknown"
+                    logger.info(
+                        "Auto-switching %s: %s -> %s (RMS=%.6f)",
+                        device_type, old_name, info.device_name, info.rms_level,
+                    )
+
+                    # 获取新设备
+                    new_mic = None
+                    include_lb = (device_type == "loopback")
+                    for m in sc.all_microphones(include_loopback=include_lb):
+                        if m.id == info.device_id:
+                            new_mic = m
+                            break
+
+                    if new_mic:
+                        if device_type == "loopback":
+                            self._loopback_mic = new_mic
+                        else:
+                            self._input_mic = new_mic
+
+                        # 重置计数器
+                        if device_type == "loopback":
+                            self._loopback_no_signal_count = 0
+                        else:
+                            self._mic_no_signal_count = 0
+
+                        # 触发回调通知
+                        if self._on_device_switched:
+                            try:
+                                asyncio.run_coroutine_threadsafe(
+                                    self._on_device_switched(device_type, old_name, info.device_name),
+                                    asyncio.get_event_loop(),
+                                )
+                            except Exception:
+                                pass
+
+                        break
+            else:
+                logger.warning("No alternative device with signal found for %s", device_type)
+                # 重置计数器避免反复扫描
+                if device_type == "loopback":
+                    self._loopback_no_signal_count = 0
+                else:
+                    self._mic_no_signal_count = 0
+        except Exception as e:
+            logger.error(f"Auto-switch device error: {e}")
+        finally:
+            self._device_switch_lock.release()
 
     def _record_loopback(self, recorder, timeout: float = 0.3) -> np.ndarray:
         """带超时的 loopback 录制，超时返回静音避免阻塞整个流水线"""

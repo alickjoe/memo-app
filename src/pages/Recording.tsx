@@ -16,6 +16,7 @@ export default function Recording() {
   const [duration, setDuration] = useState(0)
   const [isPaused, setIsPaused] = useState(false)
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([])
+  const [deviceNotification, setDeviceNotification] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const durationRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -44,6 +45,10 @@ export default function Recording() {
         const data = JSON.parse(event.data)
         if (data.type === 'transcript') {
           setTranscripts((prev) => [...prev, data.segment])
+        } else if (data.type === 'device_switched') {
+          const msg = `${t('recording.deviceSwitched')}: ${data.old_device} → ${data.new_device}`
+          setDeviceNotification(msg)
+          setTimeout(() => setDeviceNotification(null), 5000)
         }
       }
 
@@ -114,6 +119,13 @@ export default function Recording() {
           </button>
         </div>
       </div>
+
+      {/* 设备切换通知 */}
+      {deviceNotification && (
+        <div className="bg-amber-50 border-b border-amber-200 px-6 py-2 text-sm text-amber-700">
+          {deviceNotification}
+        </div>
+      )}
 
       {/* 转写流 */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
