@@ -4,6 +4,9 @@ export interface ElectronAPI {
   showMainWindow: () => void
   onTrayStartRecording: (callback: () => void) => void
   removeTrayStartRecordingListener: () => void
+  getBackendMode: () => Promise<string>
+  installTorch: () => Promise<{ success: boolean; message: string }>
+  restartBackend: () => Promise<string>
 }
 
 declare global {

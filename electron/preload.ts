@@ -13,4 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeTrayStartRecordingListener: (): void => {
     ipcRenderer.removeAllListeners('tray:start-recording')
   },
+  getBackendMode: (): Promise<string> => ipcRenderer.invoke('get-backend-mode'),
+  installTorch: (): Promise<{ success: boolean; message: string }> => ipcRenderer.invoke('install-torch'),
+  restartBackend: (): Promise<string> => ipcRenderer.invoke('restart-backend'),
 })

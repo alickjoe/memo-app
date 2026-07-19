@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import path from 'path'
 import { createTray, destroyTray } from './tray'
-import { startPythonBackend, stopPythonBackend, getBackendUrl } from './python-bridge'
+import { startPythonBackend, stopPythonBackend, getBackendUrl, getBackendMode, installTorch, restartBackend } from './python-bridge'
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
@@ -68,6 +68,18 @@ function registerIpcHandlers(): void {
     mainWindow?.focus()
   })
 
+  ipcMain.handle('get-backend-mode', () => {
+    return getBackendMode()
+  })
+
+  ipcMain.handle('install-torch', () => {
+    return installTorch()
+  })
+
+  ipcMain.handle('restart-backend', async () => {
+    const url = await restartBackend()
+    return url
+  })
 
 }
 
