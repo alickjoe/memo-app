@@ -38,6 +38,7 @@ export default function Settings() {
   } | null>(null)
   const [torchInstalling, setTorchInstalling] = useState(false)
   const [torchMessage, setTorchMessage] = useState('')
+  const [torchRestarting, setTorchRestarting] = useState(false)
 
   useEffect(() => {
     loadSettings()
@@ -110,13 +111,32 @@ export default function Settings() {
   }
 
   const handleRestartBackend = async () => {
+    setTorchRestarting(true)
+    setTorchMessage('')
     try {
       await window.electronAPI?.restartBackend()
-      // 重新加载 torch 状态
-      await loadTorchStatus()
-      setTorchMessage('')
+      // 后端已重启，但 VAD 引擎可能还未初始化完成，延迟并重试加载
+      await new Promise((r) => setTimeout(r, 2000))
+      let loaded = false
+      for (let i = 0; i < 5; i++) {
+        try {
+          await loadTorchStatus()
+          loaded = true
+          break
+        } catch {
+          await new Promise((r) => setTimeout(r, 1500))
+        }
+      }
+      if (loaded) {
+        setTorchMessage(t('settings.vadRestartDone'))
+      } else {
+        setTorchMessage(t('settings.vadRestartFailed'))
+      }
     } catch (err: any) {
       console.error('Failed to restart backend:', err)
+      setTorchMessage(`${t('settings.vadRestartFailed')}: ${err.message || ''}`)
+    } finally {
+      setTorchRestarting(false)
     }
   }
 
@@ -402,20 +422,21 @@ export default function Settings() {
                 {torchStatus.vad_engine === 'energy' && (
                   <button
                     onClick={handleInstallTorch}
-                    disabled={torchInstalling}
+                    disabled={torchInstalling || torchRestarting}
                     className="px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700 disabled:opacity-50 text-sm"
                   >
                     {torchInstalling ? t('settings.vadInstalling') : t('settings.vadInstallTorch')}
                   </button>
                 )}
-                {torchMessage && torchMessage.includes(t('settings.vadInstallSuccess')) && (
+                {(torchMessage && torchMessage.includes(t('settings.vadInstallSuccess'))) || torchRestarting ? (
                   <button
                     onClick={handleRestartBackend}
-                    className="px-4 py-2 border border-primary-200 text-primary-600 rounded-md hover:bg-primary-50 text-sm"
+                    disabled={torchRestarting}
+                    className="px-4 py-2 border border-primary-200 text-primary-600 rounded-md hover:bg-primary-50 disabled:opacity-50 text-sm"
                   >
-                    {t('settings.vadRestart')}
+                    {torchRestarting ? t('settings.vadRestarting') : t('settings.vadRestart')}
                   </button>
-                )}
+                ) : null}
               </div>
             </div>
           ) : (

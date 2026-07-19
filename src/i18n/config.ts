@@ -136,6 +136,9 @@ const resources = {
         vadInstallFailed: 'Installation failed',
         vadNoPython: 'Python not found. Please install Python 3.11+ and add to PATH.',
         vadRestart: 'Restart Backend',
+        vadRestarting: 'Restarting...',
+        vadRestartDone: 'Backend restarted successfully.',
+        vadRestartFailed: 'Backend restart failed',
       },
       meetingCard: {
         recording: 'Recording',
@@ -295,6 +298,9 @@ const resources = {
         vadInstallFailed: '安装失败',
         vadNoPython: '未找到 Python，请安装 Python 3.11+ 并添加到 PATH。',
         vadRestart: '重启后端',
+        vadRestarting: '重启中...',
+        vadRestartDone: '后端已成功重启。',
+        vadRestartFailed: '后端重启失败',
       },
       meetingCard: {
         recording: '录制中',

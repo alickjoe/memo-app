@@ -74,8 +74,14 @@ function detectTorchAvailable(pythonPath: string): boolean {
     const result = spawnSync(
       pythonPath,
       ['-c', 'import torch; print(torch.__version__)'],
-      { timeout: 10000 },
+      { timeout: 30000 },
     )
+    if (result.status !== 0) {
+      const errOut = result.stderr?.toString() || ''
+      if (errOut) {
+        console.log(`[Python Bridge] torch detection failed for ${pythonPath}: ${errOut.slice(-200)}`)
+      }
+    }
     return result.status === 0
   } catch {
     return false
@@ -241,30 +247,47 @@ export function getBackendMode(): string {
   return backendMode
 }
 
-// 安装 PyTorch（调用系统 Python 执行 pip install）
-export function installTorch(): { success: boolean; message: string } {
-  const pythonPath = systemPythonPath || findSystemPython()
-  if (!pythonPath) {
-    return { success: false, message: 'Python not found. Please install Python 3.11+ and add to PATH.' }
-  }
-
-  try {
-    console.log(`[Python Bridge] Installing torch via ${pythonPath}...`)
-    const result = spawnSync(
-      pythonPath,
-      ['-m', 'pip', 'install', 'torch', '--index-url', 'https://download.pytorch.org/whl/cpu'],
-      { timeout: 600000 },
-    )
-    if (result.status === 0) {
-      console.log('[Python Bridge] PyTorch installed successfully')
-      return { success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' }
+// 安装 PyTorch（异步，使用系统 Python 执行 pip install）
+export function installTorch(): Promise<{ success: boolean; message: string }> {
+  return new Promise((resolve) => {
+    const pythonPath = systemPythonPath || findSystemPython()
+    if (!pythonPath) {
+      resolve({ success: false, message: 'Python not found. Please install Python 3.11+ and add to PATH.' })
+      return
     }
-    const errMsg = result.stderr?.toString().slice(-500) || 'Unknown error'
-    console.error(`[Python Bridge] PyTorch install failed: ${errMsg}`)
-    return { success: false, message: errMsg }
-  } catch (e: any) {
-    return { success: false, message: e.message || 'Installation failed' }
-  }
+
+    console.log(`[Python Bridge] Installing torch via ${pythonPath}...`)
+    const proc = spawn(pythonPath, [
+      '-m', 'pip', 'install', 'torch',
+      '--index-url', 'https://download.pytorch.org/whl/cpu',
+    ])
+
+    let stderr = ''
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString()
+    })
+
+    proc.on('close', (code: number | null) => {
+      if (code === 0) {
+        // 安装后验证 torch 是否真正可导入
+        console.log('[Python Bridge] pip install completed, verifying torch import...')
+        if (detectTorchAvailable(pythonPath)) {
+          console.log('[Python Bridge] PyTorch installed and verified')
+          resolve({ success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' })
+        } else {
+          resolve({ success: false, message: 'Installation completed but torch import failed. Check pip output.' })
+        }
+      } else {
+        const errMsg = stderr.slice(-500) || `Exit code: ${code}`
+        console.error(`[Python Bridge] PyTorch install failed: ${errMsg}`)
+        resolve({ success: false, message: errMsg })
+      }
+    })
+
+    proc.on('error', (err: Error) => {
+      resolve({ success: false, message: err.message || 'Installation failed' })
+    })
+  })
 }
 
 // 重启后端（安装 torch 后切换到源码模式）
