@@ -55,6 +55,7 @@ class VoiceActivityDetector:
                     repo_or_dir='snakers4/silero-vad',
                     model='silero_vad',
                     force_reload=False,
+                    trust_repo=True,
                 )
                 self._model = model
                 self._get_speech_timestamps = utils[0]
@@ -86,7 +87,11 @@ class VoiceActivityDetector:
         return rms > 500  # 能量阈值（int16 RMS），提高以减少噪音误判
 
     async def detect(self, audio_bytes: bytes) -> bool:
-        """检测音频块是否包含语音（原始逐帧判断）"""
+        """检测音频块是否包含语音（原始逐帧判断）
+        
+        Silero VAD 要求输入恰好 512 样本 (32ms @ 16kHz) 或 256 样本 (32ms @ 8kHz)。
+        调用方可能传入不同长度的 chunk，此处自动切分为 512-sample 窗口分批检测。
+        """
         if len(audio_bytes) < 320:  # 小于 10ms (16kHz * 2 bytes * 0.01)
             return False
 
@@ -95,13 +100,24 @@ class VoiceActivityDetector:
                 import torch
                 import numpy as np
 
-                # 转换为 float32 tensor
+                # 转换为 float32 array
                 audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-                audio_tensor = torch.from_numpy(audio_np)
+                total_samples = len(audio_np)
 
-                # VAD 检测
-                speech_prob = self._model(audio_tensor, self._sample_rate).item()
-                return speech_prob > self.threshold
+                # Silero VAD at 16kHz expects exactly 512 samples per inference
+                vad_window = 512
+                max_prob = 0.0
+
+                for start in range(0, total_samples, vad_window):
+                    chunk = audio_np[start:start + vad_window]
+                    if len(chunk) < vad_window:
+                        # 最后一帧不足 512 样本，补零
+                        chunk = np.pad(chunk, (0, vad_window - len(chunk)), mode='constant')
+                    audio_tensor = torch.from_numpy(chunk)
+                    speech_prob = self._model(audio_tensor, self._sample_rate).item()
+                    max_prob = max(max_prob, speech_prob)
+
+                return max_prob > self.threshold
             except Exception as e:
                 logger.warning(f"Silero VAD failed, falling back to energy-based: {e}")
 

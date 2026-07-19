@@ -147,11 +147,9 @@ async def signal_status():
 
 @app.post("/api/record/start")
 async def start_recording(request: dict = None):
-    """开始录制，可指定音频设备和转写配置"""
+    """开始录制，使用系统默认音频设备。转写配置在启动时确定，不可中途变更。"""
     meeting_id = str(uuid.uuid4())
     request = request or {}
-    loopback_device_id = request.get("loopback_device_id")
-    input_device_id = request.get("input_device_id")
 
     # 合并录音配置：请求参数 > settings 默认值
     defaults = await _load_recording_defaults()
@@ -168,7 +166,7 @@ async def start_recording(request: dict = None):
     _active_recording_configs[meeting_id] = recording_config
 
     try:
-        # 设置设备切换回调：通知前端
+        # 设置设备切换回调：通知前端（手动切换时触发）
         async def on_device_switched(device_type: str, old_name: str, new_name: str):
             msg = {
                 "type": "device_switched",
@@ -184,11 +182,7 @@ async def start_recording(request: dict = None):
 
         audio_capture.set_device_switch_callback(on_device_switched)
 
-        await audio_capture.start(
-            meeting_id,
-            loopback_device_id=loopback_device_id,
-            input_device_id=input_device_id,
-        )
+        await audio_capture.start(meeting_id)
         active_captures[meeting_id] = audio_capture
 
         # 创建会议记录
@@ -205,6 +199,8 @@ async def start_recording(request: dict = None):
         return {
             "meeting_id": meeting_id,
             "status": "recording",
+            "loopback_device_name": audio_capture.loopback_device_name,
+            "input_device_name": audio_capture.input_device_name,
             "config": {
                 "segmentation_strategy": recording_config.segmentation_strategy,
                 "max_segment_duration": recording_config.max_segment_duration,
@@ -242,6 +238,35 @@ async def resume_recording():
     """恢复录制"""
     audio_capture.resume()
     return {"status": "recording"}
+
+
+@app.post("/api/record/switch-device")
+async def switch_device(request: dict = None):
+    """录制中手动切换音频设备
+    
+    Args:
+        device_type: "loopback" | "input"
+        device_id: 目标设备 ID，空字符串表示回退系统默认
+    """
+    request = request or {}
+    device_type = request.get("device_type", "")
+    device_id = request.get("device_id", "")
+
+    if not audio_capture:
+        return {"error": "No active capture"}, 400
+
+    if device_type not in ("loopback", "input"):
+        return {"error": f"Invalid device_type: {device_type}"}, 400
+
+    success = audio_capture.switch_device(device_type, device_id)
+    if not success:
+        return {"error": f"Device not found or switch failed"}, 404
+
+    return {
+        "status": "switched",
+        "device_type": device_type,
+        "device_name": audio_capture.loopback_device_name if device_type == "loopback" else audio_capture.input_device_name,
+    }
 
 
 # ==================== Meetings ====================
@@ -717,8 +742,10 @@ async def process_audio_pipeline(meeting_id: str):
         _active_recording_configs[meeting_id].segmentation_strategy = "fixed"
 
     logger.info(
-        "Starting audio pipeline for meeting %s (strategy=%s, VAD degraded=%s, max_seg=%.1fs)",
-        meeting_id, strategy, vad_degraded, config.max_segment_duration,
+        "Starting audio pipeline for meeting %s (strategy=%s, VAD degraded=%s, %s=%.1fs)",
+        meeting_id, strategy, vad_degraded,
+        "fixed_chunk" if strategy == "fixed" else "max_seg",
+        config.fixed_chunk_duration if strategy == "fixed" else config.max_segment_duration,
     )
 
     # 更新 VAD 参数
@@ -787,8 +814,9 @@ async def process_audio_pipeline(meeting_id: str):
                     if len(speech_buffer) > 0:
                         silence_count += 1
 
-                # 强制最大时长检查（VAD/Hybrid 共用的保护机制）
-                # 修复：此检查必须在 silence 分支外部，确保连续语音也能触发
+                # 强制最大时长检查
+                # Hybrid: max_duration 和生产级静音检测共同保护
+                # VAD: 仅靠静音检测，不设短时限截断（300s 硬上限防内存溢出）
                 if len(speech_buffer) > 0:
                     buffer_duration = len(speech_buffer) / (16000 * 2)
                     should_segment = False
@@ -797,9 +825,13 @@ async def process_audio_pipeline(meeting_id: str):
                     if silence_count >= config.vad_silence_frames:
                         should_segment = True
                         reason = "long_pause"
-                    elif buffer_duration >= config.max_segment_duration:
+                    elif strategy == "hybrid" and buffer_duration >= config.max_segment_duration:
                         should_segment = True
                         reason = "max_duration"
+                    elif strategy == "vad" and buffer_duration >= 300.0:
+                        # 纯 VAD 安全网：仅防极端情况内存溢出
+                        should_segment = True
+                        reason = "vad_safety_max"
 
                     if should_segment:
                         segment_bytes = bytes(speech_buffer)

@@ -47,8 +47,6 @@ export default function Dashboard() {
   }
 
   const handleStartWithConfig = async (dialogConfig: {
-    loopback_device_id: string | null
-    input_device_id: string | null
     config: RecordingConfig
   }) => {
     setShowRecordDialog(false)
@@ -57,11 +55,7 @@ export default function Dashboard() {
       const res = await fetch(`${backendUrl}/api/record/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          loopback_device_id: dialogConfig.loopback_device_id,
-          input_device_id: dialogConfig.input_device_id,
-          config: dialogConfig.config,
-        }),
+        body: JSON.stringify({ config: dialogConfig.config }),
       })
       if (res.ok) {
         const data = await res.json()
@@ -194,8 +188,6 @@ export default function Dashboard() {
       {showRecordDialog && (
         <StartRecordingDialog
           defaultConfig={getDefaultConfig()}
-          defaultLoopbackDevice={settings.audio_output_device || ''}
-          defaultInputDevice={settings.audio_input_device || ''}
           onStart={handleStartWithConfig}
           onCancel={() => setShowRecordDialog(false)}
         />

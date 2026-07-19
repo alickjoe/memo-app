@@ -1,13 +1,13 @@
 """
 C. 设备信号监控测试 (6 cases)
-测试 AudioCapture 的信号追踪、设备扫描、自动切换
+测试 AudioCapture 的信号追踪、设备扫描、手动切换
 
-注意：soundcard 已在 conftest.py 模块级别被 mock，因此 audio.capture 可安全导入。
+注意：soundcard 已在 conftest.py pytest_configure 中被 mock，因此 audio.capture 可安全导入。
 """
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-from audio.capture import AudioCapture, SIGNAL_THRESHOLD_RMS, NO_SIGNAL_CHUNKS_BEFORE_SCAN
+from audio.capture import AudioCapture
 
 
 @pytest.fixture
@@ -21,47 +21,33 @@ def audio_capture():
 # C1: 初始信号状态
 # ============================================================
 def test_signal_stats_initial_state(audio_capture):
-    """初始状态信号计数器均为 0"""
+    """初始状态 RMS 值均为 0"""
     stats = audio_capture.signal_stats
     assert stats["loopback_rms"] == 0.0
     assert stats["mic_rms"] == 0.0
-    assert stats["loopback_no_signal_chunks"] == 0
-    assert stats["mic_no_signal_chunks"] == 0
+    assert "loopback_no_signal_chunks" not in stats
+    assert "mic_no_signal_chunks" not in stats
 
 
 # ============================================================
-# C2: 无信号计数器递增
+# C2: 手动切换标志初始状态
 # ============================================================
-def test_signal_monitor_counts_no_signal_chunks(audio_capture):
-    """连续无信号时计数器应递增"""
-    for _ in range(NO_SIGNAL_CHUNKS_BEFORE_SCAN + 10):
-        audio_capture._current_loopback_rms = 0.0
-        if audio_capture._current_loopback_rms < SIGNAL_THRESHOLD_RMS:
-            audio_capture._loopback_no_signal_count += 1
-
-    assert audio_capture._loopback_no_signal_count >= NO_SIGNAL_CHUNKS_BEFORE_SCAN
+def test_pending_restart_flag_initial_state(audio_capture):
+    """_pending_recorder_restart 初始为 False"""
+    assert audio_capture._pending_recorder_restart is False
 
 
 # ============================================================
-# C3: 有信号时计数器重置
+# C3: RMS 更新正常工作
 # ============================================================
-def test_signal_monitor_resets_on_signal(audio_capture):
-    """有信号时计数器应重置为 0"""
-    # 先累积一些无信号计数
-    audio_capture._loopback_no_signal_count = 30
-    audio_capture._mic_no_signal_count = 20
-
-    # 模拟有信号到达
+def test_rms_updates_correctly(audio_capture):
+    """_current_loopback_rms 和 _current_mic_rms 可正常更新"""
     audio_capture._current_loopback_rms = 0.05
     audio_capture._current_mic_rms = 0.03
 
-    if audio_capture._current_loopback_rms >= SIGNAL_THRESHOLD_RMS:
-        audio_capture._loopback_no_signal_count = 0
-    if audio_capture._current_mic_rms >= SIGNAL_THRESHOLD_RMS:
-        audio_capture._mic_no_signal_count = 0
-
-    assert audio_capture._loopback_no_signal_count == 0
-    assert audio_capture._mic_no_signal_count == 0
+    stats = audio_capture.signal_stats
+    assert stats["loopback_rms"] == 0.05
+    assert stats["mic_rms"] == 0.03
 
 
 # ============================================================
@@ -114,8 +100,6 @@ async def test_signal_status_endpoint(test_db, mock_all_globals):
     capture.signal_stats = {
         "loopback_rms": 0.003,
         "mic_rms": 0.001,
-        "loopback_no_signal_chunks": 5,
-        "mic_no_signal_chunks": 12,
     }
 
     transport = ASGITransport(app=main.app)
@@ -125,8 +109,6 @@ async def test_signal_status_endpoint(test_db, mock_all_globals):
     data = res.json()
     assert data["loopback_rms"] == 0.003
     assert data["mic_rms"] == 0.001
-    assert data["loopback_no_signal_chunks"] == 5
-    assert data["mic_no_signal_chunks"] == 12
 
 
 # ============================================================

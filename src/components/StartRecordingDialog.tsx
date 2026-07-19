@@ -11,29 +11,9 @@ export interface RecordingConfig {
   vad_hangover_frames: number
 }
 
-interface AudioDevice {
-  id: string
-  name: string
-  is_loopback: boolean
-}
-
-interface SignalDevice {
-  device_id: string
-  device_name: string
-  has_signal: boolean
-  rms_level: number
-  is_loopback: boolean
-}
-
 interface Props {
   defaultConfig: RecordingConfig
-  defaultLoopbackDevice: string
-  defaultInputDevice: string
-  onStart: (config: {
-    loopback_device_id: string | null
-    input_device_id: string | null
-    config: RecordingConfig
-  }) => void
+  onStart: (config: { config: RecordingConfig }) => void
   onCancel: () => void
 }
 
@@ -45,80 +25,27 @@ const STRATEGY_OPTIONS = [
 
 export default function StartRecordingDialog({
   defaultConfig,
-  defaultLoopbackDevice,
-  defaultInputDevice,
   onStart,
   onCancel,
 }: Props) {
   const { t } = useTranslation()
   const [useDefaults, setUseDefaults] = useState(true)
   const [config, setConfig] = useState<RecordingConfig>({ ...defaultConfig })
-  const [loopbackDevice, setLoopbackDevice] = useState(defaultLoopbackDevice || '')
-  const [inputDevice, setInputDevice] = useState(defaultInputDevice || '')
-  const [devices, setDevices] = useState<AudioDevice[]>([])
-  const [scanning, setScanning] = useState(false)
-  const [signalDevices, setSignalDevices] = useState<SignalDevice[]>([])
-
-  useEffect(() => {
-    loadDevices()
-  }, [])
 
   // 当切换"使用默认"时，重置配置
   useEffect(() => {
     if (useDefaults) {
       setConfig({ ...defaultConfig })
-      setLoopbackDevice(defaultLoopbackDevice || '')
-      setInputDevice(defaultInputDevice || '')
     }
-  }, [useDefaults, defaultConfig, defaultLoopbackDevice, defaultInputDevice])
-
-  const loadDevices = async () => {
-    try {
-      const backendUrl = await window.electronAPI?.getBackendUrl()
-      const res = await fetch(`${backendUrl}/api/audio/devices`)
-      if (res.ok) {
-        const data = await res.json()
-        setDevices(data.devices || [])
-      }
-    } catch (err) {
-      console.error('Failed to load devices:', err)
-    }
-  }
-
-  const handleScanDevices = async () => {
-    setScanning(true)
-    try {
-      const backendUrl = await window.electronAPI?.getBackendUrl()
-      const res = await fetch(`${backendUrl}/api/audio/scan-devices`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_type: 'all', duration: 1.5 }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setSignalDevices(data.devices || [])
-      }
-    } catch (err) {
-      console.error('Failed to scan devices:', err)
-    } finally {
-      setScanning(false)
-    }
-  }
+  }, [useDefaults, defaultConfig])
 
   const handleStart = useCallback(() => {
-    onStart({
-      loopback_device_id: loopbackDevice || null,
-      input_device_id: inputDevice || null,
-      config,
-    })
-  }, [loopbackDevice, inputDevice, config, onStart])
+    onStart({ config })
+  }, [config, onStart])
 
   const updateConfig = (key: keyof RecordingConfig, value: number | string) => {
     setConfig((prev) => ({ ...prev, [key]: value }))
   }
-
-  const loopbackDevices = devices.filter((d) => d.is_loopback)
-  const inputDevices = devices.filter((d) => !d.is_loopback)
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
@@ -262,81 +189,6 @@ export default function StartRecordingDialog({
               </div>
             </>
           )}
-
-          {/* 音频设备选择 */}
-          <div className="border-t border-gray-100 pt-4">
-            <h3 className="text-sm font-semibold text-gray-700 mb-3">{t('recording.audioDevices')}</h3>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  {t('recording.outputDevice')}
-                </label>
-                <select
-                  value={loopbackDevice}
-                  onChange={(e) => setLoopbackDevice(e.target.value)}
-                  disabled={useDefaults}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400 disabled:bg-gray-50"
-                >
-                  <option value="">{t('settings.systemDefault')}</option>
-                  {loopbackDevices.map((d) => (
-                    <option key={d.id} value={d.id}>{d.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  {t('recording.inputDevice')}
-                </label>
-                <select
-                  value={inputDevice}
-                  onChange={(e) => setInputDevice(e.target.value)}
-                  disabled={useDefaults}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400 disabled:bg-gray-50"
-                >
-                  <option value="">{t('settings.systemDefault')}</option>
-                  {inputDevices.map((d) => (
-                    <option key={d.id} value={d.id}>{d.name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* 设备信号扫描 */}
-            <div className="mt-3">
-              <button
-                onClick={handleScanDevices}
-                disabled={scanning}
-                className="text-sm text-primary-600 hover:text-primary-700 disabled:text-gray-400"
-              >
-                {scanning ? t('recording.scanning') : t('recording.scanDevices')}
-              </button>
-
-              {signalDevices.length > 0 && (
-                <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
-                  {signalDevices.map((d) => (
-                    <button
-                      key={d.device_id}
-                      onClick={() => {
-                        if (d.is_loopback) setLoopbackDevice(d.device_id)
-                        else setInputDevice(d.device_id)
-                      }}
-                      className={`w-full text-left px-3 py-1.5 rounded text-xs flex items-center justify-between ${
-                        d.has_signal
-                          ? 'bg-green-50 text-green-700 hover:bg-green-100'
-                          : 'bg-gray-50 text-gray-400'
-                      }`}
-                    >
-                      <span className="truncate flex-1">{d.device_name || d.name}</span>
-                      <span className="ml-2 shrink-0">
-                        {d.has_signal ? `✓ RMS:${d.rms_level.toFixed(4)}` : '✗'}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
         </div>
 
         {/* Footer */}

@@ -11,10 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # 确保 backend 在 sys.path 中
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 关键：在任何模块导入 main 之前 mock soundcard，避免其依赖链（soundcard → numpy C 扩展）
-# 被 importlib.reload 重复加载导致 "cannot load module more than once per process" 错误
-if "soundcard" not in sys.modules:
-    sys.modules["soundcard"] = MagicMock()
+
+def pytest_configure(config):
+    """pytest 启动时注入 mock，防止 soundcard -> numpy C 扩展被重复加载"""
+    if "soundcard" not in sys.modules:
+        sys.modules["soundcard"] = MagicMock()
 
 
 @pytest.fixture
@@ -115,11 +116,10 @@ def mock_audio_capture():
     capture.set_device_switch_callback = MagicMock()
     capture.list_devices = MagicMock(return_value=[])
     capture.scan_devices_for_signal = MagicMock(return_value=[])
+    capture.switch_device = MagicMock(return_value=False)
     capture.signal_stats = {
         "loopback_rms": 0.0,
         "mic_rms": 0.0,
-        "loopback_no_signal_chunks": 0,
-        "mic_no_signal_chunks": 0,
     }
     capture.loopback_device_name = "test-loopback"
     capture.input_device_name = "test-mic"

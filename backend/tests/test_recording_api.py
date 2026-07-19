@@ -1,6 +1,6 @@
 """
-B. 录制 API 集成测试 (5 cases)
-测试 /api/record/start 端点的配置接受、覆盖和错误处理
+B. 录制 API 集成测试 (6 cases)
+测试 /api/record/start 和 /api/record/switch-device 端点
 """
 import pytest
 from httpx import AsyncClient, ASGITransport
@@ -72,27 +72,29 @@ async def test_start_recording_with_custom_config(
 
 
 # ============================================================
-# B3: 设备 ID 传递
+# B3: start 返回设备名且不传 device_id
 # ============================================================
 @pytest.mark.asyncio
-async def test_start_recording_with_device_ids(
+async def test_start_recording_returns_device_names(
     test_db, mock_all_globals, client,
 ):
-    """loopback_device_id 和 input_device_id 应传递到 capture.start"""
+    """响应中包含 loopback_device_name 和 input_device_name，start 不传 device_id"""
     mocks = mock_all_globals
     capture = mocks["audio_capture"]
 
     res = await client.post("/api/record/start", json={
-        "loopback_device_id": "lb-test-001",
-        "input_device_id": "mic-test-002",
+        "config": {"segmentation_strategy": "vad"},
     })
     assert res.status_code == 200
+    data = res.json()
+    assert "loopback_device_name" in data
+    assert "input_device_name" in data
 
-    # 验证 capture.start 被调用时传入了正确的设备 ID
+    # 验证 capture.start 被调用时没有传 device_id
     capture.start.assert_called_once()
     call_kwargs = capture.start.call_args.kwargs
-    assert call_kwargs["loopback_device_id"] == "lb-test-001"
-    assert call_kwargs["input_device_id"] == "mic-test-002"
+    assert "loopback_device_id" not in call_kwargs
+    assert "input_device_id" not in call_kwargs
 
 
 # ============================================================
@@ -146,3 +148,25 @@ async def test_config_cleanup_on_error(
 
     # 确认没有残留配置
     assert len(main._active_recording_configs) == 0
+
+
+# ============================================================
+# B6: 手动切换设备端点
+# ============================================================
+@pytest.mark.asyncio
+async def test_switch_device_endpoint(
+    test_db, mock_all_globals, client,
+):
+    """POST /api/record/switch-device 应调用 capture.switch_device"""
+    mocks = mock_all_globals
+    capture = mocks["audio_capture"]
+    capture.switch_device = lambda device_type, device_id: True
+
+    res = await client.post("/api/record/switch-device", json={
+        "device_type": "loopback",
+        "device_id": "test-dev-001",
+    })
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "switched"
+    assert data["device_type"] == "loopback"
