@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, spawnSync, ChildProcess } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { app } from 'electron'
@@ -7,6 +7,8 @@ import http from 'http'
 let pythonProcess: ChildProcess | null = null
 let backendPort: number = 0
 let backendUrl: string = ''
+let backendMode: 'frozen' | 'source' = 'frozen'
+let systemPythonPath: string | null = null
 
 // 查找可用端口
 function findFreePort(): Promise<number> {
@@ -41,6 +43,45 @@ function findPythonPath(): string {
   return 'python'
 }
 
+// 查找可用于安装包的 Python（不含项目 venv 检测，用于系统级操作）
+function findSystemPython(): string | null {
+  const projectRoot = path.join(__dirname, '..')
+
+  // 1. 项目本地 venv
+  const localVenv = path.join(projectRoot, '.venv', 'Scripts', 'python.exe')
+  if (fs.existsSync(localVenv)) {
+    return localVenv
+  }
+
+  // 2. 系统 PATH 中的 python
+  try {
+    const result = spawnSync('python', ['--version'], { timeout: 5000 })
+    if (result.status === 0) return 'python'
+  } catch { /* ignore */ }
+
+  // 3. 尝试 python3
+  try {
+    const result = spawnSync('python3', ['--version'], { timeout: 5000 })
+    if (result.status === 0) return 'python3'
+  } catch { /* ignore */ }
+
+  return null
+}
+
+// 检测指定 Python 是否安装了 torch
+function detectTorchAvailable(pythonPath: string): boolean {
+  try {
+    const result = spawnSync(
+      pythonPath,
+      ['-c', 'import torch; print(torch.__version__)'],
+      { timeout: 10000 },
+    )
+    return result.status === 0
+  } catch {
+    return false
+  }
+}
+
 // 获取 Python 后端可执行文件路径
 function getPythonCommand(): { cmd: string; args: string[] } {
   const isDev = !app.isPackaged
@@ -57,6 +98,10 @@ function getPythonCommand(): { cmd: string; args: string[] } {
 
 // 获取后端入口路径
 function getBackendEntryPath(): string {
+  if (app.isPackaged) {
+    // 生产环境：源码在 extraResources 中
+    return path.join(process.resourcesPath, 'backend', 'main.py')
+  }
   return path.join(__dirname, '..', 'backend', 'main.py')
 }
 
@@ -95,6 +140,7 @@ export async function startPythonBackend(): Promise<string> {
     await waitForBackend(defaultUrl, 1)
     console.log(`[Python Bridge] Reusing existing backend at ${defaultUrl}`)
     backendUrl = defaultUrl
+    backendMode = 'source'
     return backendUrl
   } catch {
     // 没有已运行的后端，启动新实例
@@ -103,8 +149,36 @@ export async function startPythonBackend(): Promise<string> {
   backendPort = await findFreePort()
   backendUrl = `http://127.0.0.1:${backendPort}`
 
-  const { cmd, args } = getPythonCommand()
-  console.log(`[Python Bridge] Starting: ${cmd} ${args.join(' ')}`)
+  // 决定启动模式
+  let cmd: string
+  let args: string[]
+
+  if (app.isPackaged) {
+    // 生产环境：检测系统 Python + torch
+    systemPythonPath = findSystemPython()
+    if (systemPythonPath && detectTorchAvailable(systemPythonPath)) {
+      // 使用源码模式（Python + torch → Silero VAD）
+      const entryPath = getBackendEntryPath()
+      cmd = systemPythonPath
+      args = [entryPath]
+      backendMode = 'source'
+      console.log(`[Python Bridge] Using source mode with ${systemPythonPath} (torch detected)`)
+    } else {
+      // 使用冻结 exe（无 torch → 能量 VAD）
+      cmd = path.join(process.resourcesPath, 'backend', 'backend.exe')
+      args = []
+      backendMode = 'frozen'
+      console.log('[Python Bridge] Using frozen backend.exe (no torch)')
+    }
+  } else {
+    // 开发模式：始终使用源码
+    const { cmd: devCmd, args: devArgs } = getPythonCommand()
+    cmd = devCmd
+    args = devArgs
+    backendMode = 'source'
+  }
+
+  console.log(`[Python Bridge] Starting (${backendMode}): ${cmd} ${args.join(' ')}`)
 
   pythonProcess = spawn(cmd, args, {
     env: {
@@ -160,4 +234,43 @@ export async function stopPythonBackend(): Promise<void> {
 // 获取后端 URL
 export function getBackendUrl(): string {
   return backendUrl
+}
+
+// 获取后端运行模式
+export function getBackendMode(): string {
+  return backendMode
+}
+
+// 安装 PyTorch（调用系统 Python 执行 pip install）
+export function installTorch(): { success: boolean; message: string } {
+  const pythonPath = systemPythonPath || findSystemPython()
+  if (!pythonPath) {
+    return { success: false, message: 'Python not found. Please install Python 3.11+ and add to PATH.' }
+  }
+
+  try {
+    console.log(`[Python Bridge] Installing torch via ${pythonPath}...`)
+    const result = spawnSync(
+      pythonPath,
+      ['-m', 'pip', 'install', 'torch', '--index-url', 'https://download.pytorch.org/whl/cpu'],
+      { timeout: 600000 },
+    )
+    if (result.status === 0) {
+      console.log('[Python Bridge] PyTorch installed successfully')
+      return { success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' }
+    }
+    const errMsg = result.stderr?.toString().slice(-500) || 'Unknown error'
+    console.error(`[Python Bridge] PyTorch install failed: ${errMsg}`)
+    return { success: false, message: errMsg }
+  } catch (e: any) {
+    return { success: false, message: e.message || 'Installation failed' }
+  }
+}
+
+// 重启后端（安装 torch 后切换到源码模式）
+export async function restartBackend(): Promise<string> {
+  await stopPythonBackend()
+  // 重新检测 Python + torch
+  systemPythonPath = null
+  return startPythonBackend()
 }

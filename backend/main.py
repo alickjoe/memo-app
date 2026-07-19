@@ -545,6 +545,77 @@ async def update_settings(settings: dict):
     return {"status": "saved"}
 
 
+# ==================== System / Torch ====================
+
+@app.get("/api/system/backend-mode")
+async def get_backend_mode():
+    """返回当前后端运行模式"""
+    import sys
+    is_frozen = getattr(sys, 'frozen', False)
+    return {"mode": "frozen" if is_frozen else "source"}
+
+
+@app.get("/api/system/torch-status")
+async def get_torch_status():
+    """检测 PyTorch 是否可用"""
+    import sys
+    is_frozen = getattr(sys, 'frozen', False)
+    vad_engine = "energy"
+    if vad is not None:
+        vad_engine = "silero" if not vad.is_degraded else "energy"
+    try:
+        import torch
+        version = torch.__version__
+        cuda_available = torch.cuda.is_available()
+        return {
+            "available": True,
+            "version": version,
+            "cuda_available": cuda_available,
+            "backend_mode": "frozen" if is_frozen else "source",
+            "vad_engine": vad_engine,
+        }
+    except ImportError:
+        return {
+            "available": False,
+            "version": None,
+            "cuda_available": False,
+            "backend_mode": "frozen" if is_frozen else "source",
+            "vad_engine": vad_engine,
+        }
+
+
+@app.post("/api/system/install-torch")
+async def install_torch():
+    """安装 PyTorch（仅在源码模式下可用）"""
+    import sys
+    import subprocess
+
+    if getattr(sys, 'frozen', False):
+        return {
+            "success": False,
+            "error": "Cannot install packages in frozen mode. Please install Python and run from source.",
+        }
+
+    try:
+        # 使用 CPU 版 torch，体积更小
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "torch", "--index-url",
+             "https://download.pytorch.org/whl/cpu"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode == 0:
+            logger.info("PyTorch installed successfully")
+            return {"success": True, "message": "PyTorch installed. Restart backend to enable Silero VAD."}
+        else:
+            logger.error(f"PyTorch installation failed: {result.stderr}")
+            return {"success": False, "error": result.stderr[-500:]}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Installation timed out (10 minutes)"}
+    except Exception as e:
+        logger.error(f"PyTorch installation error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ==================== Usage Stats ====================
 
 @app.get("/api/usage/stats")

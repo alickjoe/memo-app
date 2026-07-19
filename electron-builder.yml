@@ -17,6 +17,11 @@ extraResources:
     to: backend/
     filter:
       - "**/*"
+  - from: backend/
+    to: backend/
+    filter:
+      - "**/*.py"
+      - "requirements.txt"
 
 asar: true
 asarUnpack:

@@ -19,10 +19,12 @@ interface MeetingCardProps {
 export default function MeetingCard({ meeting, onClick, onDelete }: MeetingCardProps) {
   const { t } = useTranslation()
 
-  const formatDate = (dateStr: string): string => {
+  const formatDateTime = (dateStr: string): string => {
     const d = new Date(dateStr)
     const locale = i18n.language === 'zh' ? 'zh-CN' : 'en-US'
-    return d.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
+    const datePart = d.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
+    const timePart = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    return `${datePart} ${timePart}`
   }
 
   const formatDuration = (seconds: number): string => {
@@ -50,7 +52,7 @@ export default function MeetingCard({ meeting, onClick, onDelete }: MeetingCardP
           {meeting.title || t('meetingCard.untitled')}
         </h3>
         <p className="text-xs text-gray-400 mt-0.5">
-          {formatDate(meeting.created_at)} &middot; {formatDuration(meeting.duration_seconds)}
+          {formatDateTime(meeting.created_at)} &middot; {formatDuration(meeting.duration_seconds)}
         </p>
       </div>
       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${status.color}`}>

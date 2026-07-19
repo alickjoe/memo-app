@@ -284,6 +284,14 @@ export default function MeetingDetail() {
     }
   }
 
+  const formatDateTime = (dateStr: string): string => {
+    const d = new Date(dateStr)
+    const locale = uiLanguage === 'zh' ? 'zh-CN' : 'en-US'
+    const datePart = d.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
+    const timePart = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    return `${datePart} ${timePart}`
+  }
+
   const formatDuration = (seconds: number): string => {
     const m = Math.floor(seconds / 60)
     const s = seconds % 60
@@ -332,7 +340,7 @@ export default function MeetingDetail() {
           </h1>
         )}
         <span className="text-sm text-gray-400">
-          {meeting.created_at} &middot; {formatDuration(meeting.duration_seconds)}
+          {formatDateTime(meeting.created_at)} &middot; {formatDuration(meeting.duration_seconds)}
         </span>
         <div className="flex-1" />
         {meeting.status === 'done' && transcriptVersions.length > 1 && (
