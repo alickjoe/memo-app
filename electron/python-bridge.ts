@@ -397,11 +397,12 @@ export function installTorch(): Promise<{ success: boolean; message: string }> {
     }
     console.log('[Python Bridge] Runtime deps installed')
 
-    // Step 2: 安装 PyTorch（需要单独指定 CPU 索引）
+    // Step 2: 安装 PyTorch（CPU 优先，PyPI 回退以兼容新版 Python）
     console.log(`[Python Bridge] Step 2/3: Installing torch + torchaudio via ${pythonPath}...`)
     const step2 = await spawnPromise(pythonPath, [
       '-m', 'pip', 'install', 'torch', 'torchaudio',
       '--index-url', 'https://download.pytorch.org/whl/cpu',
+      '--extra-index-url', 'https://pypi.org/simple/',
     ], 600_000)
     if (step2.code !== 0) {
       const errMsg = step2.stderr.slice(-500) || `Exit code: ${step2.code}`
