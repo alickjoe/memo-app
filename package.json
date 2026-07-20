@@ -1,6 +1,6 @@
 {
   "name": "memo-app",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Windows 会议纪要应用 - 捕获系统音和麦克风，实时转写，LLM 生成纪要",
   "main": "dist-electron/main.js",
   "author": "Memo Team",
