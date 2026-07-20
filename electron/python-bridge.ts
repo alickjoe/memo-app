@@ -407,7 +407,19 @@ export function installTorch(): Promise<{ success: boolean; message: string }> {
       console.log('[Python Bridge] All dependencies verified')
       return { success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' }
     }
-    return { success: false, message: 'Installation completed but import verification failed. Check pip output.' }
+
+    // 逐个诊断失败模块
+    const modules = ['fastapi', 'uvicorn', 'soundcard', 'numpy', 'httpx', 'aiosqlite', 'torch', 'torchaudio']
+    const failed: string[] = []
+    for (const mod of modules) {
+      const r = spawnSync(pythonPath, ['-c', `import ${mod}`], { timeout: 15000 })
+      if (r.status !== 0) {
+        const detail = (r.stderr?.toString() || '').split('\n').slice(-2).join(' | ').trim() || 'unknown error'
+        failed.push(`${mod}(${detail})`)
+      }
+    }
+    const detail = failed.length > 0 ? ` Failed: ${failed.join('; ')}` : ''
+    return { success: false, message: `Import verification failed.${detail}` }
   })()
 }
 
