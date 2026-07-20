@@ -11,8 +11,9 @@
     DetailPrint "Installing PyTorch (this may take several minutes)..."
     nsExec::ExecToLog "powershell -ExecutionPolicy Bypass -File $\"$INSTDIR\resources\install-torch.ps1$\""
     Pop $1
-    ${If} $1 != 0
-      MessageBox MB_OK|MB_ICONWARNING "PyTorch installation failed (exit code $1). You can install it later from the Settings page in Memo."
+    StrCpy $R0 $1
+    ${If} $R0 != 0
+      MessageBox MB_OK|MB_ICONWARNING "PyTorch installation failed (exit code $R0). You can install it later from the Settings page in Memo."
     ${EndIf}
     skipPyTorch:
   ${EndIf}
