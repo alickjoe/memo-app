@@ -43,6 +43,55 @@ function findPythonPath(): string {
   return 'python'
 }
 
+// 扫描 Windows 常见 Python 安装目录，返回候选 exe 路径（版本降序）
+function scanWindowsPythonDirs(): string[] {
+  const candidates: string[] = []
+  const seen = new Set<string>()
+
+  const addIfExists = (dir: string): void => {
+    const exe = path.join(dir, 'python.exe')
+    if (!seen.has(exe) && fs.existsSync(exe)) {
+      seen.add(exe)
+      candidates.push(exe)
+    }
+  }
+
+  // %LOCALAPPDATA%/Programs/Python/ — 官网及 Store 版默认路径
+  try {
+    const localAppData = process.env.LOCALAPPDATA
+    if (localAppData) {
+      const pyParent = path.join(localAppData, 'Programs', 'Python')
+      if (fs.existsSync(pyParent)) {
+        const entries = fs.readdirSync(pyParent, { withFileTypes: true })
+        for (const entry of entries) {
+          if (entry.isDirectory() && /^Python3\d+$/i.test(entry.name)) {
+            addIfExists(path.join(pyParent, entry.name))
+          }
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  // C:/Python3X — 经典安装路径，覆盖 3.8 ~ 3.20
+  for (let minor = 20; minor >= 8; minor--) {
+    addIfExists(`C:/Python3${minor}`)
+  }
+
+  // C:/Program Files/Python3X
+  for (let minor = 20; minor >= 8; minor--) {
+    addIfExists(`C:/Program Files/Python3${minor}`)
+  }
+
+  // 按版本号降序
+  candidates.sort((a, b) => {
+    const va = parseInt((a.match(/Python3(\d+)/i) || [])[1] || '0', 10)
+    const vb = parseInt((b.match(/Python3(\d+)/i) || [])[1] || '0', 10)
+    return vb - va
+  })
+
+  return candidates
+}
+
 // 查找可用于安装包的 Python（不含项目 venv 检测，用于系统级操作）
 function findSystemPython(): string | null {
   const projectRoot = path.join(__dirname, '..')
@@ -65,27 +114,82 @@ function findSystemPython(): string | null {
     if (result.status === 0) return 'python3'
   } catch { /* ignore */ }
 
+  // 4. 扫描 Windows 常见安装目录
+  if (process.platform === 'win32') {
+    const candidates = scanWindowsPythonDirs()
+    for (const candidate of candidates) {
+      try {
+        const result = spawnSync(candidate, ['--version'], { timeout: 5000 })
+        if (result.status === 0) {
+          console.log(`[Python Bridge] Found Python at: ${candidate}`)
+          return candidate
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
   return null
 }
 
-// 检测指定 Python 是否安装了 torch + torchaudio（Silero VAD 所需）
-function detectTorchAvailable(pythonPath: string): boolean {
+// 验证指定 Python 是否安装了所有运行时依赖（source mode 切换前置条件）
+function verifyAllDepsAvailable(pythonPath: string): boolean {
   try {
     const result = spawnSync(
       pythonPath,
-      ['-c', 'import torch, torchaudio; print(torch.__version__)'],
+      ['-c', 'import fastapi, uvicorn, soundcard, numpy, httpx, aiosqlite, torch, torchaudio; print("OK")'],
       { timeout: 30000 },
     )
     if (result.status !== 0) {
       const errOut = result.stderr?.toString() || ''
       if (errOut) {
-        console.log(`[Python Bridge] torch detection failed for ${pythonPath}: ${errOut.slice(-200)}`)
+        console.log(`[Python Bridge] dependency check failed for ${pythonPath}: ${errOut.slice(-200)}`)
       }
     }
-    return result.status === 0
+    return result.status === 0 && (result.stdout?.toString() || '').includes('OK')
   } catch {
     return false
   }
+}
+
+// 带超时的 spawn promise 封装
+function spawnPromise(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, args)
+    let stderr = ''
+    let settled = false
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        proc.kill()
+        resolve({ code: null, stderr: 'Installation timed out' })
+      }
+    }, timeoutMs)
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString()
+    })
+
+    proc.on('close', (code) => {
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+        resolve({ code, stderr })
+      }
+    })
+
+    proc.on('error', (err: Error) => {
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+        resolve({ code: null, stderr: err.message })
+      }
+    })
+  })
 }
 
 // 获取 Python 后端可执行文件路径
@@ -162,7 +266,7 @@ export async function startPythonBackend(): Promise<string> {
   if (app.isPackaged) {
     // 生产环境：检测系统 Python + torch
     systemPythonPath = findSystemPython()
-    if (systemPythonPath && detectTorchAvailable(systemPythonPath)) {
+    if (systemPythonPath && verifyAllDepsAvailable(systemPythonPath)) {
       // 使用源码模式（Python + torch → Silero VAD）
       const entryPath = getBackendEntryPath()
       cmd = systemPythonPath
@@ -249,44 +353,65 @@ export function getBackendMode(): string {
 
 // 安装 PyTorch（异步，使用系统 Python 执行 pip install）
 export function installTorch(): Promise<{ success: boolean; message: string }> {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const pythonPath = systemPythonPath || findSystemPython()
     if (!pythonPath) {
       resolve({ success: false, message: 'Python not found. Please install Python 3.11+ and add to PATH.' })
       return
     }
 
-    console.log(`[Python Bridge] Installing torch + torchaudio via ${pythonPath}...`)
-    const proc = spawn(pythonPath, [
+    // Step 1: 安装运行时基础依赖（从 requirements.txt 读取）
+    const reqPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'backend', 'requirements.txt')
+      : path.join(__dirname, '..', 'backend', 'requirements.txt')
+
+    let runtimeDeps: string[] = []
+    try {
+      const content = fs.readFileSync(reqPath, 'utf-8')
+      runtimeDeps = content
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#') && !line.includes('pyinstaller'))
+        .map(line => line.split(/[>=<~!]/)[0].trim())
+        .filter(name => name && name !== 'torch' && name !== 'torchaudio')
+      console.log(`[Python Bridge] Runtime deps parsed from requirements.txt: ${runtimeDeps.join(', ')}`)
+    } catch {
+      // requirements.txt 不可用时回退到硬编码列表
+      runtimeDeps = ['fastapi', 'uvicorn[standard]', 'soundcard', 'numpy', 'httpx', 'aiosqlite']
+      console.log('[Python Bridge] Using hardcoded runtime deps fallback')
+    }
+
+    console.log(`[Python Bridge] Step 1/3: Installing runtime deps via ${pythonPath}...`)
+    const step1 = await spawnPromise(pythonPath, ['-m', 'pip', 'install', ...runtimeDeps], 600_000)
+    if (step1.code !== 0) {
+      const errMsg = step1.stderr.slice(-500) || `Exit code: ${step1.code}`
+      console.error(`[Python Bridge] Runtime deps install failed: ${errMsg}`)
+      resolve({ success: false, message: `Dependencies install failed: ${errMsg}` })
+      return
+    }
+    console.log('[Python Bridge] Runtime deps installed')
+
+    // Step 2: 安装 PyTorch（需要单独指定 CPU 索引）
+    console.log(`[Python Bridge] Step 2/3: Installing torch + torchaudio via ${pythonPath}...`)
+    const step2 = await spawnPromise(pythonPath, [
       '-m', 'pip', 'install', 'torch', 'torchaudio',
       '--index-url', 'https://download.pytorch.org/whl/cpu',
-    ])
+    ], 600_000)
+    if (step2.code !== 0) {
+      const errMsg = step2.stderr.slice(-500) || `Exit code: ${step2.code}`
+      console.error(`[Python Bridge] PyTorch install failed: ${errMsg}`)
+      resolve({ success: false, message: `PyTorch install failed: ${errMsg}` })
+      return
+    }
 
-    let stderr = ''
-    proc.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString()
-    })
-
-    proc.on('close', (code: number | null) => {
-      if (code === 0) {
-        // 安装后验证 torch 和 torchaudio 是否真正可导入
-        console.log('[Python Bridge] pip install completed, verifying torch + torchaudio import...')
-        if (detectTorchAvailable(pythonPath)) {
-          console.log('[Python Bridge] PyTorch + torchaudio installed and verified')
-          resolve({ success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' })
-        } else {
-          resolve({ success: false, message: 'Installation completed but torch import failed. Check pip output.' })
-        }
-      } else {
-        const errMsg = stderr.slice(-500) || `Exit code: ${code}`
-        console.error(`[Python Bridge] PyTorch install failed: ${errMsg}`)
-        resolve({ success: false, message: errMsg })
-      }
-    })
-
-    proc.on('error', (err: Error) => {
-      resolve({ success: false, message: err.message || 'Installation failed' })
-    })
+    // Step 3: 验证所有依赖均可导入
+    console.log('[Python Bridge] Step 3/3: Verifying all dependencies...')
+    if (verifyAllDepsAvailable(pythonPath)) {
+      console.log('[Python Bridge] All dependencies verified')
+      resolve({ success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' })
+    } else {
+      resolve({ success: false, message: 'Installation completed but import verification failed. Check pip output.' })
+    }
   })
 }
 
