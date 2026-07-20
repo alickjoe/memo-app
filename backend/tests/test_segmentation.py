@@ -2,11 +2,10 @@
 A. 分段策略单元测试 (6 cases)
 测试 process_audio_pipeline 在不同策略下的分段行为
 """
-import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from tests.helpers import make_audio_bytes, make_empty_chunk
+from tests.helpers import make_audio_bytes
 
 
 # ============================================================
@@ -145,7 +144,6 @@ async def test_fixed_strategy_chunks_by_duration(
 
     mocks = mock_all_globals
     capture = mocks["audio_capture"]
-    vad = mocks["vad"]
     stt = mocks["stt_engine"]
 
     config = RecordingConfig(

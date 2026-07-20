@@ -5,7 +5,7 @@ C. 设备信号监控测试 (6 cases)
 注意：soundcard 已在 conftest.py pytest_configure 中被 mock，因此 audio.capture 可安全导入。
 """
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 from audio.capture import AudioCapture
 

@@ -260,7 +260,7 @@ async def switch_device(request: dict = None):
 
     success = audio_capture.switch_device(device_type, device_id)
     if not success:
-        return {"error": f"Device not found or switch failed"}, 404
+        return {"error": "Device not found or switch failed"}, 404
 
     return {
         "status": "switched",

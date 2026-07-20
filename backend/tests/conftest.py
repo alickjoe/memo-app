@@ -3,7 +3,6 @@
 """
 import os
 import sys
-import asyncio
 import pytest
 import aiosqlite
 from unittest.mock import AsyncMock, MagicMock, patch
