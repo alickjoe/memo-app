@@ -1,3 +1,5 @@
+!include "LogicLib.nsh"
+
 !macro customInstall
   DetailPrint "NSIS include loaded"
 !macroend
