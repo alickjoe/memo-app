@@ -5,8 +5,12 @@
   ${If} ${FileExists} "$0\Memo\python\python.exe"
     DetailPrint "PyTorch already installed"
   ${Else}
-    MessageBox MB_YESNO|MB_ICONQUESTION "Install PyTorch? You can also install later from Settings." IDNO skipPyTorch
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
+      "Install PyTorch for better voice detection?$\n$\nRequires internet and ~200MB download. You can also install later from Settings." \
+      IDNO skipPyTorch
     DetailPrint "User chose to install"
+    nsExec::ExecToLog "powershell -ExecutionPolicy Bypass -File $\"$INSTDIR\resources\install-torch.ps1$\""
+    Pop $1
     skipPyTorch:
   ${EndIf}
 !macroend
