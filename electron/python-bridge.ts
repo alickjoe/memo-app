@@ -82,11 +82,13 @@ function scanWindowsPythonDirs(): string[] {
     addIfExists(`C:/Program Files/Python3${minor}`)
   }
 
-  // 按版本号降序
+  // 按版本号降序，稳定版 (3.11-3.13) 优先于实验版 (3.14+)
   candidates.sort((a, b) => {
     const va = parseInt((a.match(/Python3(\d+)/i) || [])[1] || '0', 10)
     const vb = parseInt((b.match(/Python3(\d+)/i) || [])[1] || '0', 10)
-    return vb - va
+    const scoreA = (va >= 11 && va <= 13) ? va + 100 : va
+    const scoreB = (vb >= 11 && vb <= 13) ? vb + 100 : vb
+    return scoreB - scoreA
   })
 
   return candidates
