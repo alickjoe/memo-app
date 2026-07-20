@@ -48,4 +48,4 @@ nsis:
   shortcutName: Memo
   deleteAppDataOnUninstall: false
   runAfterFinish: true
-  include: ../build/installer.nsh
+  include: installer.nsh
