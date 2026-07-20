@@ -12,7 +12,7 @@
     nsExec::ExecToLog "powershell -ExecutionPolicy Bypass -File $\"$INSTDIR\resources\install-torch.ps1$\""
     Pop $1
     ${If} $1 != 0
-      MessageBox MB_OK|MB_ICONWARNING "PyTorch installation failed. You can install it later from the Settings page in Memo."
+      MessageBox MB_OK|MB_ICONWARNING "failed"
     ${EndIf}
     skipPyTorch:
   ${EndIf}
