@@ -102,16 +102,22 @@ function findSystemPython(): string | null {
     return localVenv
   }
 
-  // 2. 系统 PATH 中的 python
+  // 2. 系统 PATH 中的 python（解析为绝对路径，避免 spawn 时解析到不同解释器）
   try {
-    const result = spawnSync('python', ['--version'], { timeout: 5000 })
-    if (result.status === 0) return 'python'
+    const result = spawnSync('python', ['-c', 'import sys; print(sys.executable)'], { timeout: 5000 })
+    if (result.status === 0) {
+      const fullPath = result.stdout?.toString().trim()
+      if (fullPath) return fullPath
+    }
   } catch { /* ignore */ }
 
   // 3. 尝试 python3
   try {
-    const result = spawnSync('python3', ['--version'], { timeout: 5000 })
-    if (result.status === 0) return 'python3'
+    const result = spawnSync('python3', ['-c', 'import sys; print(sys.executable)'], { timeout: 5000 })
+    if (result.status === 0) {
+      const fullPath = result.stdout?.toString().trim()
+      if (fullPath) return fullPath
+    }
   } catch { /* ignore */ }
 
   // 4. 扫描 Windows 常见安装目录
