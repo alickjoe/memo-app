@@ -40,11 +40,14 @@ export default function Settings() {
   const [torchInstalling, setTorchInstalling] = useState(false)
   const [torchMessage, setTorchMessage] = useState('')
   const [torchRestarting, setTorchRestarting] = useState(false)
+  const [pythonInfo, setPythonInfo] = useState<{ source: 'managed' | 'system' | 'none'; path: string | null } | null>(null)
+  const [uninstallingPython, setUninstallingPython] = useState(false)
 
   useEffect(() => {
     loadSettings()
     loadAudioDevices()
     loadTorchStatus()
+    loadPythonInfo()
   }, [])
 
   const loadSettings = async () => {
@@ -88,6 +91,33 @@ export default function Settings() {
       }
     } catch (err) {
       console.error('Failed to load torch status:', err)
+    }
+  }
+
+  const loadPythonInfo = async () => {
+    try {
+      const info = await window.electronAPI?.getPythonInfo()
+      if (info) setPythonInfo(info)
+    } catch {
+      // ignore
+    }
+  }
+
+  const handleUninstallManagedPython = async () => {
+    setUninstallingPython(true)
+    setTorchMessage('')
+    try {
+      const result = await window.electronAPI?.uninstallManagedPython()
+      if (result) {
+        setTorchMessage(result.success ? t('settings.vadUninstallSuccess') : `${t('settings.vadUninstallFailed')}: ${result.message}`)
+        if (result.success) {
+          setPythonInfo({ source: 'none', path: null })
+        }
+      }
+    } catch (err: any) {
+      setTorchMessage(`${t('settings.vadUninstallFailed')}: ${err.message || ''}`)
+    } finally {
+      setUninstallingPython(false)
     }
   }
 
@@ -414,17 +444,24 @@ export default function Settings() {
                   <span className="text-xs text-gray-400">PyTorch {torchStatus.version}</span>
                 )}
               </div>
+              {pythonInfo && (
+                <div className="text-xs text-gray-500">
+                  {pythonInfo.source === 'managed' && t('settings.vadPythonManaged')}
+                  {pythonInfo.source === 'system' && `${t('settings.vadPythonSystem')}: ${pythonInfo.path}`}
+                  {pythonInfo.source === 'none' && t('settings.vadPythonNone')}
+                </div>
+              )}
               {torchStatus.available && torchStatus.vad_engine === 'energy' && torchStatus.vad_error && (
                 <div className="text-xs px-3 py-2 bg-yellow-50 text-yellow-700 rounded">
                   {t('settings.vadDegradedReason')}: {torchStatus.vad_error}
                 </div>
               )}
               {torchMessage && (
-                <div className={`text-xs px-3 py-2 rounded ${torchMessage.includes(t('settings.vadInstallSuccess')) ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                <div className={`text-xs px-3 py-2 rounded ${torchMessage.includes(t('settings.vadInstallSuccess')) || torchMessage.includes(t('settings.vadUninstallSuccess')) ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
                   {torchMessage}
                 </div>
               )}
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 {torchStatus.vad_engine === 'energy' && (
                   <button
                     onClick={handleInstallTorch}
@@ -443,6 +480,24 @@ export default function Settings() {
                     {torchRestarting ? t('settings.vadRestarting') : t('settings.vadRestart')}
                   </button>
                 ) : null}
+                {pythonInfo?.source === 'managed' && (
+                  <>
+                    <button
+                      onClick={handleInstallTorch}
+                      disabled={torchInstalling || torchRestarting || uninstallingPython}
+                      className="px-4 py-2 border border-primary-200 text-primary-600 rounded-md hover:bg-primary-50 disabled:opacity-50 text-sm"
+                    >
+                      {t('settings.vadReinstall')}
+                    </button>
+                    <button
+                      onClick={handleUninstallManagedPython}
+                      disabled={uninstallingPython}
+                      className="px-4 py-2 border border-red-200 text-red-600 rounded-md hover:bg-red-50 disabled:opacity-50 text-sm"
+                    >
+                      {uninstallingPython ? t('settings.vadUninstalling') : t('settings.vadUninstall')}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           ) : (

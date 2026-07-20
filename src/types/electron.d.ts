@@ -7,6 +7,8 @@ export interface ElectronAPI {
   getBackendMode: () => Promise<string>
   installTorch: () => Promise<{ success: boolean; message: string }>
   restartBackend: () => Promise<string>
+  getPythonInfo: () => Promise<{ source: 'managed' | 'system' | 'none'; path: string | null }>
+  uninstallManagedPython: () => Promise<{ success: boolean; message: string }>
 }
 
 declare global {

@@ -98,6 +98,16 @@ function scanWindowsPythonDirs(): string[] {
 function findSystemPython(): string | null {
   const projectRoot = path.join(__dirname, '..')
 
+  // 0. 安装程序部署的托管 Python（最高优先级）
+  const localAppData = process.env.LOCALAPPDATA
+  if (localAppData) {
+    const managedPython = path.join(localAppData, 'Memo', 'python', 'python.exe')
+    if (fs.existsSync(managedPython)) {
+      console.log(`[Python Bridge] Using installer-managed Python: ${managedPython}`)
+      return managedPython
+    }
+  }
+
   // 1. 项目本地 venv
   const localVenv = path.join(projectRoot, '.venv', 'Scripts', 'python.exe')
   if (fs.existsSync(localVenv)) {
@@ -430,6 +440,45 @@ export function installTorch(): Promise<{ success: boolean; message: string }> {
     const detail = failed.length > 0 ? ` Failed: ${failed.join('; ')}` : ''
     return { success: false, message: `Import verification failed.${detail}` }
   })()
+}
+
+// 获取 Python 来源信息（供 Settings 页面展示）
+export function getPythonInfo(): { source: 'managed' | 'system' | 'none'; path: string | null } {
+  // 安装程序部署的托管 Python
+  const localAppData = process.env.LOCALAPPDATA
+  if (localAppData) {
+    const managedPython = path.join(localAppData, 'Memo', 'python', 'python.exe')
+    if (fs.existsSync(managedPython)) {
+      return { source: 'managed', path: managedPython }
+    }
+  }
+
+  // 系统 Python（包括 PATH 和扫描的）
+  const sysPy = findSystemPython()
+  if (sysPy) {
+    return { source: 'system', path: sysPy }
+  }
+
+  return { source: 'none', path: null }
+}
+
+// 卸载托管 Python
+export function uninstallManagedPython(): { success: boolean; message: string } {
+  const localAppData = process.env.LOCALAPPDATA
+  if (!localAppData) {
+    return { success: false, message: 'Cannot determine local app data directory.' }
+  }
+  const pythonDir = path.join(localAppData, 'Memo', 'python')
+  if (!fs.existsSync(pythonDir)) {
+    return { success: false, message: 'Managed Python not found.' }
+  }
+  try {
+    fs.rmSync(pythonDir, { recursive: true, force: true })
+    return { success: true, message: 'PyTorch uninstalled.' }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, message: `Uninstall failed: ${msg}` }
+  }
 }
 
 // 重启后端（安装 torch 后切换到源码模式）

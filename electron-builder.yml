@@ -22,6 +22,8 @@ extraResources:
     filter:
       - "**/*.py"
       - "requirements.txt"
+  - from: build/install-torch.ps1
+    to: install-torch.ps1
 
 asar: true
 asarUnpack:
@@ -46,3 +48,4 @@ nsis:
   shortcutName: Memo
   deleteAppDataOnUninstall: false
   runAfterFinish: true
+  include: build/installer.nsh

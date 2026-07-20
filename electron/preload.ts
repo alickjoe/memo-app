@@ -16,4 +16,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getBackendMode: (): Promise<string> => ipcRenderer.invoke('get-backend-mode'),
   installTorch: (): Promise<{ success: boolean; message: string }> => ipcRenderer.invoke('install-torch'),
   restartBackend: (): Promise<string> => ipcRenderer.invoke('restart-backend'),
+  getPythonInfo: (): Promise<{ source: 'managed' | 'system' | 'none'; path: string | null }> => ipcRenderer.invoke('get-python-info'),
+  uninstallManagedPython: (): Promise<{ success: boolean; message: string }> => ipcRenderer.invoke('uninstall-managed-python'),
 })

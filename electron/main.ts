@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import path from 'path'
 import { createTray, destroyTray } from './tray'
-import { startPythonBackend, stopPythonBackend, getBackendUrl, getBackendMode, installTorch, restartBackend } from './python-bridge'
+import { startPythonBackend, stopPythonBackend, getBackendUrl, getBackendMode, installTorch, restartBackend, getPythonInfo, uninstallManagedPython } from './python-bridge'
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
@@ -79,6 +79,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('restart-backend', async () => {
     const url = await restartBackend()
     return url
+  })
+
+  ipcMain.handle('get-python-info', () => {
+    return getPythonInfo()
+  })
+
+  ipcMain.handle('uninstall-managed-python', () => {
+    return uninstallManagedPython()
   })
 
 }
