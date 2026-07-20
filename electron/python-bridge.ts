@@ -353,11 +353,10 @@ export function getBackendMode(): string {
 
 // 安装 PyTorch（异步，使用系统 Python 执行 pip install）
 export function installTorch(): Promise<{ success: boolean; message: string }> {
-  return new Promise(async (resolve) => {
+  return (async (): Promise<{ success: boolean; message: string }> => {
     const pythonPath = systemPythonPath || findSystemPython()
     if (!pythonPath) {
-      resolve({ success: false, message: 'Python not found. Please install Python 3.11+ and add to PATH.' })
-      return
+      return { success: false, message: 'Python not found. Please install Python 3.11+ and add to PATH.' }
     }
 
     // Step 1: 安装运行时基础依赖（从 requirements.txt 读取）
@@ -386,8 +385,7 @@ export function installTorch(): Promise<{ success: boolean; message: string }> {
     if (step1.code !== 0) {
       const errMsg = step1.stderr.slice(-500) || `Exit code: ${step1.code}`
       console.error(`[Python Bridge] Runtime deps install failed: ${errMsg}`)
-      resolve({ success: false, message: `Dependencies install failed: ${errMsg}` })
-      return
+      return { success: false, message: `Dependencies install failed: ${errMsg}` }
     }
     console.log('[Python Bridge] Runtime deps installed')
 
@@ -400,19 +398,17 @@ export function installTorch(): Promise<{ success: boolean; message: string }> {
     if (step2.code !== 0) {
       const errMsg = step2.stderr.slice(-500) || `Exit code: ${step2.code}`
       console.error(`[Python Bridge] PyTorch install failed: ${errMsg}`)
-      resolve({ success: false, message: `PyTorch install failed: ${errMsg}` })
-      return
+      return { success: false, message: `PyTorch install failed: ${errMsg}` }
     }
 
     // Step 3: 验证所有依赖均可导入
     console.log('[Python Bridge] Step 3/3: Verifying all dependencies...')
     if (verifyAllDepsAvailable(pythonPath)) {
       console.log('[Python Bridge] All dependencies verified')
-      resolve({ success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' })
-    } else {
-      resolve({ success: false, message: 'Installation completed but import verification failed. Check pip output.' })
+      return { success: true, message: 'PyTorch installed. Restart app to enable Silero VAD.' }
     }
-  })
+    return { success: false, message: 'Installation completed but import verification failed. Check pip output.' }
+  })()
 }
 
 // 重启后端（安装 torch 后切换到源码模式）
