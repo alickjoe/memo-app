@@ -10,13 +10,14 @@
       IDNO skipPyTorch
     DetailPrint "Installing PyTorch (this may take several minutes)..."
     DetailPrint "Log file: $TEMP\memo-torch-install.log"
-    ; Use Tee-Object to show output AND save to log file
-    nsExec::ExecToLog "powershell -ExecutionPolicy Bypass -Command $\"& '$INSTDIR\resources\install-torch.ps1' 2>&1 | Tee-Object -FilePath '$TEMP\memo-torch-install.log'$\""
+    ; Use -File (not -Command) so PowerShell correctly propagates the script exit code
+    nsExec::ExecToLog "powershell -ExecutionPolicy Bypass -File $\"$INSTDIR\resources\install-torch.ps1$\""
     Pop $1
+    DetailPrint "install-torch.ps1 exit code: $1"
     ${If} $1 != 0
       MessageBox MB_OK|MB_ICONEXCLAMATION "PyTorch installation failed (exit code $1).$\n$\nCheck the log for details:$\n$TEMP\memo-torch-install.log$\n$\nYou can also install later from the Settings page in Memo."
     ${Else}
-      DetailPrint "PyTorch installed successfully. Log: $TEMP\memo-torch-install.log"
+      DetailPrint "PyTorch installed successfully."
     ${EndIf}
     skipPyTorch:
   ${EndIf}

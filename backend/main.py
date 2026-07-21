@@ -56,7 +56,9 @@ async def lifespan(app: FastAPI):
 
     audio_capture = AudioCapture()
     vad = VoiceActivityDetector()
-    await vad._load_model()  # 预加载 Silero VAD 模型
+    # Load Silero VAD model in background — first download can take 30s+
+    # and must not block the health check endpoint during startup
+    asyncio.create_task(vad._load_model())
     stt_engine = STTEngine()
     diarizer = SpeakerDiarizer()
     summarizer = LLMSummarizer()

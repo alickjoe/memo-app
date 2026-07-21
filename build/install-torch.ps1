@@ -1,6 +1,13 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+# Start logging to file (for debugging from NSIS installer)
+$logFile = "$env:TEMP\memo-torch-install.log"
+try { Stop-Transcript -ErrorAction SilentlyContinue } catch { }  # Stop any stale transcript
+Start-Transcript -Path $logFile -Append -Force | Out-Null
+Write-Host "=== Memo PyTorch Install Log ==="
+Write-Host "Started at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+
 # ============================================================
 # Step 0: Detect system Python (3.11-3.13)
 # ============================================================
@@ -46,11 +53,13 @@ if ($useSystem) {
         if ($LASTEXITCODE -ne 0) { throw "import verification failed" }
 
         Write-Host "PyTorch installed to system Python successfully."
+        Stop-Transcript | Out-Null
+        exit 0
     } catch {
         Write-Host "ERROR: $_"
+        Stop-Transcript | Out-Null
         exit 1
     }
-    exit 0
 }
 
 # ============================================================
@@ -108,8 +117,10 @@ try {
     Write-Host "PyTorch installed successfully."
 } catch {
     Write-Host "ERROR: $_"
+    Stop-Transcript | Out-Null
     exit 1
 } finally {
     Remove-Item "$env:TEMP\$pythonZip" -ErrorAction SilentlyContinue
     Remove-Item "$env:TEMP\get-pip.py" -ErrorAction SilentlyContinue
+    Stop-Transcript | Out-Null
 }
