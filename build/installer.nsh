@@ -23,6 +23,9 @@
 !macroend
 
 !macro customUnInstall
+  ; Only clean up managed Python during manual uninstall, NOT during silent upgrades
+  IfSilent skipPythonCleanup
   ReadEnvStr $0 "LOCALAPPDATA"
   RMDir /r "$0\Memo\python"
+  skipPythonCleanup:
 !macroend
