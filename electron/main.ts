@@ -1,12 +1,13 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 import { createTray, destroyTray } from './tray'
 import { startPythonBackend, stopPythonBackend, getBackendUrl, getBackendMode, installTorch, restartBackend, getPythonInfo, uninstallManagedPython } from './python-bridge'
 
 // ── Frontend log to file ──────────────────────────────────────────
 // Write console output to ~/.memo/logs/frontend.log, overwrite on each start
-const LOG_DIR = path.join(require('os').homedir(), '.memo', 'logs')
+const LOG_DIR = path.join(os.homedir(), '.memo', 'logs')
 fs.mkdirSync(LOG_DIR, { recursive: true })
 const logStream = fs.createWriteStream(path.join(LOG_DIR, 'frontend.log'), { flags: 'w' })
 
