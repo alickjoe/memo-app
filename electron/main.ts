@@ -1,7 +1,40 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import path from 'path'
+import fs from 'fs'
 import { createTray, destroyTray } from './tray'
 import { startPythonBackend, stopPythonBackend, getBackendUrl, getBackendMode, installTorch, restartBackend, getPythonInfo, uninstallManagedPython } from './python-bridge'
+
+// ── Frontend log to file ──────────────────────────────────────────
+// Write console output to ~/.memo/logs/frontend.log, overwrite on each start
+const LOG_DIR = path.join(require('os').homedir(), '.memo', 'logs')
+fs.mkdirSync(LOG_DIR, { recursive: true })
+const logStream = fs.createWriteStream(path.join(LOG_DIR, 'frontend.log'), { flags: 'w' })
+
+function logToFile(level: string, ...args: unknown[]): void {
+  const ts = new Date().toISOString()
+  const msg = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+  logStream.write(`[${ts}] [${level}] ${msg}\n`)
+}
+
+const _origLog = console.log
+const _origError = console.error
+const _origWarn = console.warn
+console.log = (...args: unknown[]) => { logToFile('INFO', ...args); _origLog(...args) }
+console.error = (...args: unknown[]) => { logToFile('ERROR', ...args); _origError(...args) }
+console.warn = (...args: unknown[]) => { logToFile('WARN', ...args); _origWarn(...args) }
+
+// 捕获未处理的异常和 Promise rejection
+process.on('uncaughtException', (err) => {
+  logToFile('FATAL', 'Uncaught Exception:', err.stack || err.message)
+  _origError('Uncaught Exception:', err)
+})
+process.on('unhandledRejection', (reason) => {
+  logToFile('FATAL', 'Unhandled Rejection:', reason)
+  _origError('Unhandled Rejection:', reason)
+})
+
+console.log(`Frontend log file: ${path.join(LOG_DIR, 'frontend.log')}`)
+// ───────────────────────────────────────────────────────────────────
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false

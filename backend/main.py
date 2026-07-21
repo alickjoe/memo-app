@@ -27,6 +27,14 @@ from llm.summarizer import LLMSummarizer
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("memo-backend")
 
+# Also log to file for offline debugging (overwrite on each start)
+_log_dir = os.path.join(os.path.expanduser("~"), ".memo", "logs")
+os.makedirs(_log_dir, exist_ok=True)
+_file_handler = logging.FileHandler(os.path.join(_log_dir, "backend.log"), mode='w', encoding='utf-8')
+_file_handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
+logging.getLogger().addHandler(_file_handler)
+logger.info("Backend log file: %s", os.path.join(_log_dir, "backend.log"))
+
 # 全局状态
 active_captures: dict[str, AudioCapture] = {}
 active_stt: dict[str, STTEngine] = {}
