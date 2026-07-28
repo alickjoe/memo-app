@@ -1,15 +1,19 @@
 """
 LLM 纪要生成模块 - 使用 OpenAI/DeepSeek API 生成会议纪要
 """
-import os
 import json
 import logging
-from typing import Optional
+import os
 
 import httpx
 import urllib3
 
-from llm.prompts import DEFAULT_SYSTEM_PROMPT, EN_SYSTEM_PROMPT, TITLE_GENERATION_PROMPT, EN_TITLE_GENERATION_PROMPT
+from llm.prompts import (
+    DEFAULT_SYSTEM_PROMPT,
+    EN_SYSTEM_PROMPT,
+    EN_TITLE_GENERATION_PROMPT,
+    TITLE_GENERATION_PROMPT,
+)
 
 # 禁用 SSL 验证警告（企业网络环境）
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -21,7 +25,7 @@ class LLMSummarizer:
     """云端 LLM 纪要生成器"""
 
     def __init__(self):
-        self.api_key: Optional[str] = None
+        self.api_key: str | None = None
         self.base_url: str = "https://api.openai.com/v1"
         self.model: str = "gpt-4o-mini"
         self.output_language: str = "en"
@@ -165,7 +169,7 @@ Summarize the key points of this segment in 2-3 sentences."""
             return f"Please generate minutes for the following meeting:\n\n{text}"
         return f"请为以下会议生成纪要：\n\n{text}"
 
-    async def _call_llm_for_chunk(self, prompt: str) -> Optional[str]:
+    async def _call_llm_for_chunk(self, prompt: str) -> str | None:
         """针对单个片段调用 LLM"""
         try:
             async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
@@ -228,7 +232,7 @@ Summarize the key points of this segment in 2-3 sentences."""
             "raw_response": "",
         }
 
-    async def generate_title(self, summary: str) -> Optional[str]:
+    async def generate_title(self, summary: str) -> str | None:
         """根据摘要生成会议标题"""
         await self._ensure_config()
         if not self.api_key:

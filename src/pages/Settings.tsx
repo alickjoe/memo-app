@@ -114,8 +114,9 @@ export default function Settings() {
           setPythonInfo({ source: 'none', path: null })
         }
       }
-    } catch (err: any) {
-      setTorchMessage(`${t('settings.vadUninstallFailed')}: ${err.message || ''}`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : ''
+      setTorchMessage(`${t('settings.vadUninstallFailed')}: ${msg}`)
     } finally {
       setUninstallingPython(false)
     }
@@ -134,8 +135,9 @@ export default function Settings() {
           setTorchMessage(isNoPython ? t('settings.vadNoPython') : `${t('settings.vadInstallFailed')}: ${result.message}`)
         }
       }
-    } catch (err: any) {
-      setTorchMessage(`${t('settings.vadInstallFailed')}: ${err.message || ''}`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : ''
+      setTorchMessage(`${t('settings.vadInstallFailed')}: ${msg}`)
     } finally {
       setTorchInstalling(false)
     }
@@ -163,9 +165,10 @@ export default function Settings() {
       } else {
         setTorchMessage(t('settings.vadRestartFailed'))
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to restart backend:', err)
-      setTorchMessage(`${t('settings.vadRestartFailed')}: ${err.message || ''}`)
+      const msg = err instanceof Error ? err.message : ''
+      setTorchMessage(`${t('settings.vadRestartFailed')}: ${msg}`)
     } finally {
       setTorchRestarting(false)
     }

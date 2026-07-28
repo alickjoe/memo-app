@@ -1,8 +1,8 @@
 """
 共享测试辅助函数（非 fixture，可被测试文件直接导入）
 """
-import struct
 import math
+import struct
 
 
 def make_audio_bytes(duration_sec: float, with_signal: bool = True) -> bytes:

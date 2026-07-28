@@ -3,6 +3,7 @@ F. WebSocket 通知测试 (2 cases)
 测试设备切换和转写消息通过 WebSocket 正确推送
 """
 import asyncio
+
 import pytest
 from starlette.testclient import TestClient
 

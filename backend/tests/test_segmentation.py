@@ -2,8 +2,9 @@
 A. 分段策略单元测试 (6 cases)
 测试 process_audio_pipeline 在不同策略下的分段行为
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from tests.helpers import make_audio_bytes
 

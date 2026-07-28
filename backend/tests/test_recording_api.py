@@ -3,7 +3,7 @@ B. 录制 API 集成测试 (6 cases)
 测试 /api/record/start 和 /api/record/switch-device 端点
 """
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture

@@ -3,9 +3,10 @@
 """
 import os
 import sys
-import pytest
-import aiosqlite
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import aiosqlite
+import pytest
 
 # 确保 backend 在 sys.path 中
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -192,8 +193,8 @@ def make_audio_bytes(duration_sec: float, with_signal: bool = True) -> bytes:
         duration_sec: 时长（秒）
         with_signal: True 生成有信号(正弦波), False 生成静音
     """
-    import struct
     import math
+    import struct
     sample_rate = 16000
     num_samples = int(sample_rate * duration_sec)
     data = bytearray()

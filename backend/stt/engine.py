@@ -1,12 +1,11 @@
 """
 云端 STT 引擎 - 使用 OpenAI Whisper API 进行语音转写
 """
-import os
+import asyncio
 import io
 import logging
+import os
 import re
-import asyncio
-from typing import Optional
 
 import httpx
 import urllib3
@@ -21,7 +20,7 @@ class STTEngine:
     """云端语音转写引擎"""
 
     def __init__(self):
-        self.api_key: Optional[str] = None
+        self.api_key: str | None = None
         self.base_url: str = "https://api.openai.com/v1"
         self.model: str = "whisper-1"
         self.language: str = "zh"
@@ -47,7 +46,7 @@ class STTEngine:
         if not self.api_key:
             await self.reload_config()
 
-    async def transcribe(self, audio_bytes: bytes) -> Optional[str]:
+    async def transcribe(self, audio_bytes: bytes) -> str | None:
         """转写音频片段"""
         await self._ensure_config()
 
@@ -103,7 +102,7 @@ class STTEngine:
 
         return None
 
-    async def transcribe_with_validation(self, audio_bytes: bytes) -> Optional[str]:
+    async def transcribe_with_validation(self, audio_bytes: bytes) -> str | None:
         """转写音频片段并进行输出校验，过滤乱码和无效结果
 
         校验规则：
@@ -121,7 +120,7 @@ class STTEngine:
 
         # 校验1: 不为纯标点符号
         punctuation_only_pattern = re.compile(
-            r'^[\s\u3000-\u303f\uff00-\uffef，。！？、；：""''…—～·　\-\.,!?;:"\'()\[\]{}<>]+$'
+            r'^[\s\u3000-\u303f\uff00-\uffef，。！？、；：""''…—～·　\\-\\.,!?;:"\'()\\[\\]{}<>]+$'
         )
         if punctuation_only_pattern.match(text):
             logger.info("Validation rejected: punctuation-only output: %s", text[:80])

@@ -1,9 +1,10 @@
 """
 SQLite 数据库管理模块
 """
-import os
-import aiosqlite
 import logging
+import os
+
+import aiosqlite
 
 logger = logging.getLogger("memo.db")
 

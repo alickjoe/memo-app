@@ -79,8 +79,8 @@ class VoiceActivityDetector:
 
     def _energy_based_vad(self, audio_bytes: bytes) -> bool:
         """基于能量的简单 VAD 回退方案"""
-        import struct
         import math
+        import struct
 
         if len(audio_bytes) < 2:
             return False
@@ -104,8 +104,8 @@ class VoiceActivityDetector:
 
         if self._model is not None:
             try:
-                import torch
                 import numpy as np
+                import torch
 
                 # 转换为 float32 array
                 audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0

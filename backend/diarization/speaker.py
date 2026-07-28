@@ -2,6 +2,7 @@
 说话人分离模块 - 基于能量和时段的简单聚类方案
 """
 import logging
+
 import numpy as np
 
 logger = logging.getLogger("memo.diarization")

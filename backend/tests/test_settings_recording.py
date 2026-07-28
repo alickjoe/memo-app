@@ -3,7 +3,7 @@ D. 录音默认配置 CRUD 测试 (4 cases)
 测试 /api/settings 对 recording_* 键的读写
 """
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture

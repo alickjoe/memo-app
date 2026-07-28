@@ -7,16 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
-import wave
 import os
+import threading
 import time
 import warnings
-from typing import Optional, Callable
+import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 
-import soundcard as sc
 import numpy as np
+import soundcard as sc
 
 # soundcard 在 loopback 录制时偶发内部缓冲区溢出，属于已知问题，不影响音频质量
 warnings.filterwarnings("ignore", message="data discontinuity in recording")
@@ -55,15 +55,15 @@ class AudioCapture:
         self.chunk_duration = chunk_duration
         self._is_active = False
         self._is_paused = False
-        self._meeting_id: Optional[str] = None
+        self._meeting_id: str | None = None
 
-        self._loopback_mic: Optional[sc.Microphone] = None
-        self._input_mic: Optional[sc.Microphone] = None
-        self._thread: Optional[threading.Thread] = None
+        self._loopback_mic: sc.Microphone | None = None
+        self._input_mic: sc.Microphone | None = None
+        self._thread: threading.Thread | None = None
 
         # 设备信息缓存
-        self._loopback_device_id: Optional[str] = None
-        self._input_device_id: Optional[str] = None
+        self._loopback_device_id: str | None = None
+        self._input_device_id: str | None = None
 
         # 音频缓冲区
         self._buffer = bytearray()
@@ -71,7 +71,7 @@ class AudioCapture:
         self._buffer_event = asyncio.Event()
 
         # 输出文件
-        self._wave_file: Optional[wave.Wave_write] = None
+        self._wave_file: wave.Wave_write | None = None
 
         # loopback 录制锁，防止超时线程与下次录制竞争
         self._loopback_lock = threading.Lock()
@@ -84,9 +84,9 @@ class AudioCapture:
         self._pending_recorder_restart = False
 
         # 设备切换回调: async callable(device_type: str, old_name: str, new_name: str)
-        self._on_device_switched: Optional[Callable] = None
+        self._on_device_switched: Callable | None = None
 
-    def set_device_switch_callback(self, callback: Optional[Callable]):
+    def set_device_switch_callback(self, callback: Callable | None):
         """设置设备切换回调（异步函数），用于通知前端"""
         self._on_device_switched = callback
 
@@ -187,8 +187,8 @@ class AudioCapture:
     async def start(
         self,
         meeting_id: str,
-        loopback_device_id: Optional[str] = None,
-        input_device_id: Optional[str] = None,
+        loopback_device_id: str | None = None,
+        input_device_id: str | None = None,
     ):
         """开始录制
         
@@ -294,7 +294,7 @@ class AudioCapture:
     def is_active(self) -> bool:
         return self._is_active
 
-    async def read_chunk(self, timeout: float = 1.0) -> Optional[bytes]:
+    async def read_chunk(self, timeout: float = 1.0) -> bytes | None:
         """读取一个音频块"""
         try:
             await asyncio.wait_for(self._wait_for_data(), timeout=timeout)

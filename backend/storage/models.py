@@ -2,7 +2,6 @@
 数据模型定义
 """
 from dataclasses import dataclass, field
-from typing import Optional
 from datetime import datetime
 
 
@@ -10,7 +9,7 @@ from datetime import datetime
 class Meeting:
     id: str
     title: str = "Untitled Meeting"
-    audio_path: Optional[str] = None
+    audio_path: str | None = None
     duration_seconds: int = 0
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     status: str = "recording"  # recording / processing / done / error
@@ -23,7 +22,7 @@ class TranscriptSegment:
     start_time: float = 0.0
     end_time: float = 0.0
     text: str = ""
-    id: Optional[int] = None
+    id: int | None = None
 
 
 @dataclass

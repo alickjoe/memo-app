@@ -43,14 +43,14 @@ export default function Recording() {
   const [devices, setDevices] = useState<AudioDevice[]>([])
   const [loopbackDevice, setLoopbackDevice] = useState('')
   const [inputDevice, setInputDevice] = useState('')
-  const [loopbackDeviceName, setLoopbackDeviceName] = useState('')
-  const [inputDeviceName, setInputDeviceName] = useState('')
+  const [, setLoopbackDeviceName] = useState('')
+  const [, setInputDeviceName] = useState('')
   const [loopbackRms, setLoopbackRms] = useState(0)
   const [micRms, setMicRms] = useState(0)
   const [showDevicePanel, setShowDevicePanel] = useState(true)
 
   // 只读配置
-  const [config, setConfig] = useState<RecordingConfig | null>(null)
+  const [config] = useState<RecordingConfig | null>(null)
 
   // 初始化：获取 backend URL，启动设备加载和信号轮询
   useEffect(() => {

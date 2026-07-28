@@ -2,27 +2,25 @@
 Memo - 会议纪要应用后端
 FastAPI + WebSocket 服务，支持音频捕获、云端 STT、LLM 纪要生成
 """
-import os
-import json
-import uuid
 import asyncio
+import json
 import logging
+import os
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from contextlib import asynccontextmanager
-from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from concurrent.futures import ThreadPoolExecutor
-
-from storage.db import get_db, init_db
 from audio.capture import AudioCapture
 from audio.vad import VoiceActivityDetector
-from stt.engine import STTEngine
 from diarization.speaker import SpeakerDiarizer
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from llm.summarizer import LLMSummarizer
+from storage.db import get_db, init_db
+from stt.engine import STTEngine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("memo-backend")
@@ -42,11 +40,11 @@ ws_connections: dict[str, list[WebSocket]] = {}
 _retranscribe_executor = ThreadPoolExecutor(max_workers=1)
 
 # 初始化音频捕获器（单例）
-audio_capture: Optional[AudioCapture] = None
-vad: Optional[VoiceActivityDetector] = None
-stt_engine: Optional[STTEngine] = None
-diarizer: Optional[SpeakerDiarizer] = None
-summarizer: Optional[LLMSummarizer] = None
+audio_capture: AudioCapture | None = None
+vad: VoiceActivityDetector | None = None
+stt_engine: STTEngine | None = None
+diarizer: SpeakerDiarizer | None = None
+summarizer: LLMSummarizer | None = None
 
 
 def get_port() -> int:
@@ -589,7 +587,7 @@ async def get_torch_status():
     import sys
     is_frozen = getattr(sys, 'frozen', False)
     vad_engine = "energy"
-    vad_error: Optional[str] = None
+    vad_error: str | None = None
     if vad is not None:
         if vad.is_degraded:
             vad_engine = "energy"
@@ -622,8 +620,8 @@ async def get_torch_status():
 @app.post("/api/system/install-torch")
 async def install_torch():
     """安装 PyTorch（仅在源码模式下可用）"""
-    import sys
     import subprocess
+    import sys
 
     if getattr(sys, 'frozen', False):
         return {
@@ -751,7 +749,7 @@ async def _load_recording_defaults() -> RecordingConfig:
     return config
 
 
-def _merge_config(request_config: Optional[dict]) -> RecordingConfig:
+def _merge_config(request_config: dict | None) -> RecordingConfig:
     """合并请求配置到 RecordingConfig"""
     config = RecordingConfig()
     if request_config:

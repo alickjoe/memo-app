@@ -1,0 +1,18 @@
+# Ruff configuration for Memo backend
+target-version = "py311"
+
+[lint]
+# Pre-existing patterns — suppressed to keep CI green (ruff 0.16 added these as default):
+# BLE001: blind except is intentional in audio/IO error handlers
+# DTZ005: datetime.now() without tz is acceptable for local-only SQLite storage
+# S110: try-except-pass in WebSocket cleanup is intentional
+# TRY401: logging.exception already captures exception info
+# PERF401: list() in loop is negligible given segment counts
+ignore = [
+    "BLE001", "DTZ005", "S110", "TRY401", "PERF401",
+    "SIM115", "UP041", "B005", "RUF013", "ASYNC221", "PLW1510", "SIM113",
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"

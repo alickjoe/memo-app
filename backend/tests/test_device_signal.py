@@ -4,9 +4,9 @@ C. 设备信号监控测试 (6 cases)
 
 注意：soundcard 已在 conftest.py pytest_configure 中被 mock，因此 audio.capture 可安全导入。
 """
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
 from audio.capture import AudioCapture
 
 
@@ -58,8 +58,8 @@ async def test_scan_devices_endpoint_returns_signal_info(
     test_db, mock_all_globals,
 ):
     """POST /api/audio/scan-devices 返回设备信号列表"""
-    from httpx import AsyncClient, ASGITransport
     import main
+    from httpx import ASGITransport, AsyncClient
 
     mocks = mock_all_globals
     capture = mocks["audio_capture"]
@@ -92,8 +92,8 @@ async def test_scan_devices_endpoint_returns_signal_info(
 @pytest.mark.asyncio
 async def test_signal_status_endpoint(test_db, mock_all_globals):
     """GET /api/audio/signal-status 返回当前信号统计"""
-    from httpx import AsyncClient, ASGITransport
     import main
+    from httpx import ASGITransport, AsyncClient
 
     mocks = mock_all_globals
     capture = mocks["audio_capture"]

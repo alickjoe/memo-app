@@ -7,7 +7,6 @@ import StartRecordingDialog from '../components/StartRecordingDialog'
 import type { RecordingConfig } from '../components/StartRecordingDialog'
 import { useMeetingStore } from '../stores/meetings'
 import { useSettingsStore } from '../stores/settings'
-import type { Meeting } from '../stores/meetings'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -86,7 +85,6 @@ export default function Dashboard() {
   const importAudioFile = async (filePath: string) => {
     try {
       const backendUrl = await window.electronAPI?.getBackendUrl()
-      const formData = new FormData()
       // Note: actual file upload handled by backend API
       const res = await fetch(`${backendUrl}/api/import/audio`, {
         method: 'POST',
