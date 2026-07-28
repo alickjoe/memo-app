@@ -20,9 +20,12 @@ export default function TranscriptStream({ segments }: TranscriptStreamProps) {
     )
   }
 
+  // 反转顺序：最新内容显示在最上
+  const reversed = [...segments].reverse()
+
   return (
     <div className="space-y-3">
-      {segments.map((seg, idx) => (
+      {reversed.map((seg, idx) => (
         <div key={idx} className="flex gap-3 items-start group">
           <span
             className={`text-xs font-medium px-1.5 py-0.5 rounded mt-0.5 ${

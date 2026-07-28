@@ -273,6 +273,29 @@ export default function MeetingDetail() {
     URL.revokeObjectURL(url)
   }
 
+  const handleSaveTitle = async () => {
+    if (!id) return
+    const trimmedTitle = title.trim() || t('meeting.untitled')
+    setTitle(trimmedTitle)
+    setEditingTitle(false)
+    try {
+      const backendUrl = await window.electronAPI?.getBackendUrl()
+      const res = await fetch(`${backendUrl}/api/meetings/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: trimmedTitle }),
+      })
+      if (res.ok) {
+        setMeeting((prev) => prev ? { ...prev, title: trimmedTitle } : prev)
+      } else {
+        // 保存失败，恢复原标题
+        setTitle(meeting?.title || t('meeting.untitled'))
+      }
+    } catch {
+      setTitle(meeting?.title || t('meeting.untitled'))
+    }
+  }
+
   const handleDelete = async () => {
     if (!id || !window.confirm(t('meeting.confirmDelete'))) return
     try {
@@ -326,8 +349,8 @@ export default function MeetingDetail() {
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => setEditingTitle(false)}
-            onKeyDown={(e) => e.key === 'Enter' && setEditingTitle(false)}
+            onBlur={handleSaveTitle}
+            onKeyDown={(e) => e.key === 'Enter' && handleSaveTitle()}
             className="text-lg font-semibold bg-transparent border-b border-primary-400 outline-none"
             autoFocus
           />

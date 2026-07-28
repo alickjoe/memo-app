@@ -9,7 +9,7 @@ from typing import Optional
 import httpx
 import urllib3
 
-from llm.prompts import DEFAULT_SYSTEM_PROMPT, EN_SYSTEM_PROMPT
+from llm.prompts import DEFAULT_SYSTEM_PROMPT, EN_SYSTEM_PROMPT, TITLE_GENERATION_PROMPT, EN_TITLE_GENERATION_PROMPT
 
 # 禁用 SSL 验证警告（企业网络环境）
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -227,3 +227,43 @@ Summarize the key points of this segment in 2-3 sentences."""
             "next_steps": "",
             "raw_response": "",
         }
+
+    async def generate_title(self, summary: str) -> Optional[str]:
+        """根据摘要生成会议标题"""
+        await self._ensure_config()
+        if not self.api_key:
+            return None
+
+        try:
+            if self.output_language == "en":
+                user_prompt = EN_TITLE_GENERATION_PROMPT.format(summary=summary[:500])
+            else:
+                user_prompt = TITLE_GENERATION_PROMPT.format(summary=summary[:500])
+
+            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 50,
+                    },
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    title = data["choices"][0]["message"]["content"].strip()
+                    # 清理可能的引号和多余空白
+                    title = title.strip('"\'""\u201c\u201d').strip()
+                    if title:
+                        return title
+        except Exception as e:
+            logger.error(f"Title generation error: {e}")
+        return None

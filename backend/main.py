@@ -394,6 +394,24 @@ async def delete_meeting(meeting_id: str):
     return {"status": "deleted"}
 
 
+@app.put("/api/meetings/{meeting_id}")
+async def update_meeting(meeting_id: str, request: dict):
+    """更新会议信息（标题等）"""
+    db = await get_db()
+    title = request.get("title")
+    if not title:
+        return {"error": "title is required"}, 400
+
+    cursor = await db.execute(
+        "UPDATE meetings SET title = ? WHERE id = ?",
+        (title, meeting_id),
+    )
+    await db.commit()
+    if cursor.rowcount == 0:
+        return {"error": "Meeting not found"}, 404
+    return {"status": "updated", "title": title}
+
+
 @app.post("/api/meetings/{meeting_id}/regenerate")
 async def regenerate_minutes(meeting_id: str):
     """重新生成会议纪要"""
@@ -1173,6 +1191,20 @@ async def generate_minutes(meeting_id: str, transcript_text: str):
             ("done", meeting_id),
         )
         await db.commit()
+
+        # 自动生成会议标题
+        try:
+            if summarizer:
+                title = await summarizer.generate_title(minutes_data.get("summary", ""))
+                if title:
+                    await db.execute(
+                        "UPDATE meetings SET title = ? WHERE id = ?",
+                        (title, meeting_id),
+                    )
+                    await db.commit()
+                    logger.info(f"Auto-generated title for meeting {meeting_id}: {title}")
+        except Exception as e:
+            logger.warning(f"Auto-title generation skipped: {e}")
 
         # 推送进度
         for ws in ws_connections.get(meeting_id, []):

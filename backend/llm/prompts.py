@@ -56,3 +56,16 @@ INTERVIEW_PROMPT = """你是一个专业的面试记录助手。请根据提供�
 4. 推荐意见：是否推荐进入下一轮
 
 请严格按照 JSON 格式输出。"""
+
+
+TITLE_GENERATION_PROMPT = """请根据以下会议摘要，生成一个简洁的会议标题（10个字以内），只返回标题本身，不要包含任何额外说明、引号或标点。
+
+会议摘要：{summary}
+
+标题："""
+
+EN_TITLE_GENERATION_PROMPT = """Based on the following meeting summary, generate a concise meeting title (8 words max). Return only the title, nothing else - no quotes, no punctuation, no explanation.
+
+Meeting summary: {summary}
+
+Title:"""
