@@ -28,6 +28,9 @@ jobs:
       - name: TypeScript check
         run: npm run typecheck
 
+      - name: Frontend tests (Vitest)
+        run: npm run test
+
   backend-lint:
     runs-on: ubuntu-latest
     steps:
@@ -39,8 +42,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install dependencies
+        run: |
+          pip install ruff
+          pip install -r backend/requirements.txt
 
       - name: Ruff check
         run: ruff check backend/
+
+      - name: Backend tests (pytest)
+        run: pytest backend/tests/ -v
