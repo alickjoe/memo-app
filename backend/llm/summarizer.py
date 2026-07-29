@@ -95,6 +95,10 @@ class LLMSummarizer:
                 data = response.json()
                 content = data["choices"][0]["message"]["content"]
 
+                # 防御：OpenRouter 偶发返回 HTTP 200 但 content 为 None
+                if not content:
+                    raise ValueError("LLM returned empty content")
+
                 # 估算费用
                 usage = data.get("usage", {})
                 if usage:
@@ -197,12 +201,30 @@ Summarize the key points of this segment in 2-3 sentences."""
 
     def _parse_response(self, content: str) -> dict:
         """解析 LLM 响应为结构化数据"""
+        if not content or not isinstance(content, str):
+            return {
+                "summary": "",
+                "key_points": [],
+                "action_items": [],
+                "next_steps": "",
+                "raw_response": content or "",
+            }
+
         try:
             # 尝试提取 JSON
             import re
-            json_match = re.search(r'\{[\s\S]*\}', content)
+
+            # 剥离 markdown 代码块标记
+            cleaned = content.strip()
+            cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned)
+            cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+
+            json_match = re.search(r'\{[\s\S]*\}', cleaned)
             if json_match:
-                data = json.loads(json_match.group())
+                json_str = json_match.group()
+                # 移除尾随逗号（常见 LLM 输出问题）
+                json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+                data = json.loads(json_str)
                 return {
                     "summary": data.get("summary", ""),
                     "key_points": data.get("key_points", []),
@@ -210,7 +232,7 @@ Summarize the key points of this segment in 2-3 sentences."""
                     "next_steps": data.get("next_steps", ""),
                     "raw_response": content,
                 }
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
             pass
 
         # 回退：返回原始文本作为摘要
@@ -263,7 +285,10 @@ Summarize the key points of this segment in 2-3 sentences."""
 
                 if response.status_code == 200:
                     data = response.json()
-                    title = data["choices"][0]["message"]["content"].strip()
+                    content = data["choices"][0]["message"]["content"]
+                    if not content:
+                        return None
+                    title = content.strip()
                     # 清理可能的引号和多余空白
                     title = title.strip('"\'""\u201c\u201d').strip()
                     if title:

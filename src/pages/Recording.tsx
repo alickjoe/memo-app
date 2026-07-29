@@ -340,7 +340,7 @@ export default function Recording() {
           </div>
         ) : (
           <div className="space-y-3 max-w-2xl mx-auto">
-            {transcripts.map((seg, idx) => (
+            {[...transcripts].reverse().map((seg, idx) => (
               <div key={idx} className="flex gap-3 items-start">
                 <span className={`text-xs font-medium px-1.5 py-0.5 rounded mt-0.5 ${
                   seg.speaker === 'Speaker A'
