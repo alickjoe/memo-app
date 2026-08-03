@@ -28,9 +28,13 @@ backend-dist/
 # === IDE ===
 .vscode/
 .idea/
+.qoder/
 *.swp
 *.swo
 *~
+
+# === 构建产物 ===
+*.tsbuildinfo
 
 # === 操作系统 ===
 .DS_Store
