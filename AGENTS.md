@@ -60,6 +60,23 @@ ruff check backend/             # Python lint
 3. 若有 error，修复后必须重新运行直到全部通过
 4. 验证通过前不得结束任务、不得请求提交代码；会话日志中须保留 `npm run precommit` 的实际输出作为验证证据
 
+## CI 交付验收（强制）
+
+交付完成以 **本地验证 + CI 通过** 双轨为准，提交、PR 或合并操作前必须同时满足：
+
+1. **本地验证** — `npm run precommit` 通过；涉及 Python 后端时追加 `cd backend; ruff check backend/`
+2. **CI 通过** — GitHub Actions 的 `Lint` 与 `Build & Release` 两个 workflow 的最新执行均为 `success`（状态查 https://github.com/alickjoe/memo-app/actions ）
+3. **CI 触发条件** — 两个 workflow 均已配置 `push`（main/标签）与 `pull_request`（目标 main）双触发；推送后须等待 CI 完成，CI 未通过前不得标记任务完成、不得请求合并
+4. **分支保护** — main 分支的 required status checks 为 `frontend-lint`、`backend-lint`、`build`；PR 显示 "Some checks haven't completed yet" 时须等待全部通过后再合并
+
+CI 检查与本地等价命令的对应关系：
+
+| CI 检查 | 本地等价命令 | 覆盖范围 |
+|---------|--------------|----------|
+| `frontend-lint` (Lint workflow) | `npm run lint` + `npm run typecheck` + `npm run test` | 前端 ESLint / TS / Vitest |
+| `backend-lint` (Lint workflow) | `cd backend; ruff check backend/` + `pytest` | Python 静态检查 / 测试 |
+| `build` (Build & Release workflow) | `npm run build` + `npx electron-builder` | 前端构建 / 后端打包 / 安装包 |
+
 ## 关键约定
 
 - **Python 后端是独立进程** — 修改后端代码后必须重启 Electron (`npm run dev`)，前端热更新不会重载 Python
