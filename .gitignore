@@ -28,7 +28,9 @@ backend-dist/
 # === IDE ===
 .vscode/
 .idea/
-.qoder/
+.qoder/*
+!.qoder/rules/
+!.qoder/rules/**
 *.swp
 *.swo
 *~
