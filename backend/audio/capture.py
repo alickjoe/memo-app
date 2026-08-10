@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import queue
 import threading
 import time
 import warnings
@@ -73,8 +74,10 @@ class AudioCapture:
         # 输出文件
         self._wave_file: wave.Wave_write | None = None
 
-        # loopback 录制锁，防止超时线程与下次录制竞争
-        self._loopback_lock = threading.Lock()
+        # loopback 专用读取线程 + 有界队列（替代逐 chunk 线程+超时+锁方案）
+        self._loopback_queue: queue.Queue = queue.Queue(maxsize=10)
+        self._loopback_reader_thread: threading.Thread | None = None
+        self._loopback_reader_active = False
 
         # 信号监控（仅显示用，不做自动切换）
         self._current_loopback_rms = 0.0
@@ -278,6 +281,7 @@ class AudioCapture:
     def stop(self):
         """停止录制"""
         self._is_active = False
+        self._loopback_reader_active = False
         if self._wave_file:
             self._wave_file.close()
             self._wave_file = None
@@ -344,7 +348,17 @@ class AudioCapture:
                         )
                         
                         restart_errors = 0  # 成功启动，重置失败计数
-                        
+
+                        # 启动专用 loopback 读取线程
+                        self._loopback_reader_active = True
+                        self._loopback_queue = queue.Queue(maxsize=10)
+                        self._loopback_reader_thread = threading.Thread(
+                            target=self._loopback_reader_loop,
+                            args=(loopback_rec,),
+                            daemon=True,
+                        )
+                        self._loopback_reader_thread.start()
+
                         while self._is_active:
                             if self._is_paused:
                                 loopback_rec.flush()
@@ -357,8 +371,11 @@ class AudioCapture:
                                 mic_data = input_rec.record(numframes=self.chunk_size)
                                 mic_data = mic_data.mean(axis=1) if mic_data.ndim > 1 else mic_data
 
-                                # 读取系统音频（可能阻塞，加超时保护）
-                                loopback_data = self._record_loopback(loopback_rec)
+                                # 读取系统音频（非阻塞，从专用读取线程的队列获取）
+                                try:
+                                    loopback_data = self._loopback_queue.get_nowait()
+                                except queue.Empty:
+                                    loopback_data = np.zeros(self.chunk_size, dtype=np.float32)
                                 loopback_has_data = bool(np.any(loopback_data))
                                 if not loopback_has_data:
                                     loopback_timeouts += 1
@@ -416,6 +433,17 @@ class AudioCapture:
                                 logger.error(f"Capture error: {e}")
                                 time.sleep(0.05)
                                 continue
+
+                        # 停止 loopback 读取线程（在 recorder 关闭前）
+                        self._loopback_reader_active = False
+                        if self._loopback_reader_thread:
+                            self._loopback_reader_thread.join(timeout=2.0)
+                            self._loopback_reader_thread = None
+                        while not self._loopback_queue.empty():
+                            try:
+                                self._loopback_queue.get_nowait()
+                            except queue.Empty:
+                                break
 
                 except Exception as e:
                     restart_errors += 1
@@ -530,28 +558,23 @@ class AudioCapture:
             logger.error(f"switch_device error: {e}")
             return False
 
-    def _record_loopback(self, recorder, timeout: float = 0.3) -> np.ndarray:
-        """带超时的 loopback 录制，超时返回静音避免阻塞整个流水线"""
-        # 非阻塞获取锁：如果上次超时线程还在运行，放弃本次录制
-        if not self._loopback_lock.acquire(blocking=False):
-            return np.zeros(self.chunk_size, dtype=np.float32)
+    def _loopback_reader_loop(self, recorder):
+        """专用 loopback 读取线程：持续调用 record() 并存入队列
 
-        result = [None]
-
-        def _read():
+        当系统无音频播放时 record() 阻塞，不影响主采集循环（队列空 → 静音）。
+        当音频播放时数据通过队列流向主循环，无锁竞争、无线程创建开销。
+        """
+        while self._loopback_reader_active:
             try:
-                result[0] = recorder.record(numframes=self.chunk_size)
+                data = recorder.record(numframes=self.chunk_size)
+                try:
+                    self._loopback_queue.put_nowait(data)
+                except queue.Full:
+                    # 队列满：丢弃最旧数据后放入（控制延迟）
+                    try:
+                        self._loopback_queue.get_nowait()
+                        self._loopback_queue.put_nowait(data)
+                    except queue.Empty:
+                        pass
             except Exception:
-                pass
-            finally:
-                self._loopback_lock.release()
-
-        t = threading.Thread(target=_read, daemon=True)
-        t.start()
-        t.join(timeout=timeout)
-
-        if result[0] is not None:
-            return result[0]
-
-        # 超时：后台线程仍在运行（持有锁），下次迭代会跳过 loopback
-        return np.zeros(self.chunk_size, dtype=np.float32)
+                break
