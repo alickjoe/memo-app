@@ -112,15 +112,15 @@ describe('Settings Page', () => {
     const selects = audioSection.querySelectorAll('select')
     expect(selects.length).toBe(2)
 
-    // 输出设备：包含 loopback 设备
+    // 输出设备：包含 loopback 设备（findByRole 等待设备列表异步加载完成）
     const outputSelect = within(selects[0] as HTMLElement)
-    expect(outputSelect.getByRole('option', { name: 'Speakers (Loopback)' })).toBeInTheDocument()
+    expect(await outputSelect.findByRole('option', { name: 'Speakers (Loopback)' })).toBeInTheDocument()
     expect(outputSelect.getByRole('option', { name: 'Microphone Array' })).toBeInTheDocument()
 
     // 输入设备：过滤掉 loopback
     const inputSelect = within(selects[1] as HTMLElement)
     expect(inputSelect.queryByText('Speakers (Loopback)')).not.toBeInTheDocument()
-    expect(inputSelect.getByRole('option', { name: 'Microphone Array' })).toBeInTheDocument()
+    expect(await inputSelect.findByRole('option', { name: 'Microphone Array' })).toBeInTheDocument()
   })
 
   it('shows install button for energy VAD and installs PyTorch', async () => {
