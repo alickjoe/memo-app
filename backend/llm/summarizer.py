@@ -279,7 +279,7 @@ Summarize the key points of this segment in 2-3 sentences."""
                             {"role": "user", "content": user_prompt},
                         ],
                         "temperature": 0.3,
-                        "max_tokens": 50,
+                        "max_tokens": 500,
                     },
                 )
 
@@ -287,12 +287,15 @@ Summarize the key points of this segment in 2-3 sentences."""
                     data = response.json()
                     content = data["choices"][0]["message"]["content"]
                     if not content:
+                        logger.warning(f"Title generation returned empty content (finish_reason={data['choices'][0].get('finish_reason')})")
                         return None
                     title = content.strip()
                     # 清理可能的引号和多余空白
                     title = title.strip('"\'""\u201c\u201d').strip()
                     if title:
                         return title
+                else:
+                    logger.error(f"Title generation API error: {response.status_code} - {response.text}")
         except Exception as e:
             logger.error(f"Title generation error: {e}")
         return None

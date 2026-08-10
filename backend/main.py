@@ -1184,13 +1184,9 @@ async def generate_minutes(meeting_id: str, transcript_text: str):
                 datetime.now().isoformat(),
             ),
         )
-        await db.execute(
-            "UPDATE meetings SET status = ? WHERE id = ?",
-            ("done", meeting_id),
-        )
         await db.commit()
 
-        # 自动生成会议标题
+        # 自动生成会议标题（status 仍为 processing，前端轮询持续监听）
         try:
             if summarizer:
                 title = await summarizer.generate_title(minutes_data.get("summary", ""))
@@ -1203,6 +1199,13 @@ async def generate_minutes(meeting_id: str, transcript_text: str):
                     logger.info(f"Auto-generated title for meeting {meeting_id}: {title}")
         except Exception as e:
             logger.warning(f"Auto-title generation skipped: {e}")
+
+        # 标题生成完毕后再设 done，避免前端轮询提前检测到 done 而错过标题更新
+        await db.execute(
+            "UPDATE meetings SET status = ? WHERE id = ?",
+            ("done", meeting_id),
+        )
+        await db.commit()
 
         # 推送进度
         for ws in ws_connections.get(meeting_id, []):
