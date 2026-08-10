@@ -293,6 +293,8 @@ Summarize the key points of this segment in 2-3 sentences."""
                     title = title.strip('"\'""\u201c\u201d').strip()
                     if title:
                         return title
+                else:
+                    logger.error(f"Title generation API error: {response.status_code} - {response.text}")
         except Exception as e:
             logger.error(f"Title generation error: {e}")
         return None
