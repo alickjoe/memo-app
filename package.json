@@ -1,7 +1,7 @@
 {
   "name": "memo-app",
   "version": "1.2.1",
-  "description": "Windows 会议纪要应用 - 捕获系统音和麦克风，实时转写，LLM 生成纪要",
+  "description": "Windows 会议纪要应用 / Meeting Minutes App — 捕获系统音频和麦克风，实时转写，AI 生成结构化纪要 / Capture system audio & mic, real-time transcription, AI-generated structured minutes",
   "main": "dist-electron/main.js",
   "author": "Memo Team",
   "license": "MIT",
