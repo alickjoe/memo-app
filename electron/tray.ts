@@ -4,7 +4,7 @@ import path from 'path'
 let tray: Tray | null = null
 
 export function createTray(mainWindow: BrowserWindow, onQuit?: () => void): Tray {
-  const trayIconPath = path.join(__dirname, '../assets/tray-icon.png')
+  const trayIconPath = path.join(__dirname, '../assets/icon.ico')
   const trayIcon = nativeImage.createFromPath(trayIconPath)
   const trayObj = new Tray(trayIcon.resize({ width: 16, height: 16 }))
   trayObj.setToolTip('Memo - 会议纪要')
@@ -58,7 +58,7 @@ export function createTray(mainWindow: BrowserWindow, onQuit?: () => void): Tray
 export function setRecordingIcon(isRecording: boolean): void {
   if (!tray) return
 
-  const iconName = isRecording ? 'tray-icon-recording.png' : 'tray-icon.png'
+  const iconName = isRecording ? 'tray-icon-recording.png' : 'icon.ico'
   const iconPath = path.join(__dirname, '../assets', iconName)
   const icon = nativeImage.createFromPath(iconPath)
   tray.setImage(icon.resize({ width: 16, height: 16 }))

@@ -10,6 +10,8 @@ directories:
 files:
   - dist/**/*
   - dist-electron/**/*
+  - assets/icon.ico
+  - assets/tray-icon-recording.png
   - package.json
 
 extraResources:
