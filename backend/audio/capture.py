@@ -6,6 +6,7 @@ WASAPI loopback 音频捕获模块
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import queue
@@ -19,10 +20,16 @@ from dataclasses import dataclass
 import numpy as np
 import soundcard as sc
 
+from audio.sc_pcm_patch import apply as _apply_sc_pcm_patch
+
 # soundcard 在 loopback 录制时偶发内部缓冲区溢出，属于已知问题，不影响音频质量
 warnings.filterwarnings("ignore", message="data discontinuity in recording")
 
 logger = logging.getLogger("memo.audio")
+
+# Windows: 修复蓝牙 HFP / 部分 OEM 驱动端点（非 float 混音格式）无法打开的问题
+# 非 Windows 平台为安全 no-op
+_apply_sc_pcm_patch()
 
 # 信号检测阈值（用于 _test_device_signal 判断设备是否有信号）
 SIGNAL_THRESHOLD_RMS = 0.001
@@ -88,10 +95,82 @@ class AudioCapture:
 
         # 设备切换回调: async callable(device_type: str, old_name: str, new_name: str)
         self._on_device_switched: Callable | None = None
+        self._callback_loop: asyncio.AbstractEventLoop | None = None
+        # 去重用：device_type -> 最近一次通知前端的目标设备名
+        self._last_notified: dict[str, str] = {}
 
     def set_device_switch_callback(self, callback: Callable | None):
-        """设置设备切换回调（异步函数），用于通知前端"""
+        """设置设备切换回调（异步函数），用于通知前端
+
+        需在事件循环线程内调用（如 FastAPI 端点中），以便后续从采集线程
+        线程安全地调度回调。
+        """
         self._on_device_switched = callback
+        try:
+            self._callback_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._callback_loop = None
+        self._last_notified = {}
+
+    def _fire_device_switched(self, device_type: str, old_name: str, new_name: str,
+                              only_on_change: bool = True):
+        """线程安全地触发设备切换回调（仅用于前端展示通知）"""
+        if only_on_change and self._last_notified.get(device_type) == new_name:
+            return
+        self._last_notified[device_type] = new_name
+
+        callback = self._on_device_switched
+        loop = self._callback_loop
+        if callback is None or loop is None or not loop.is_running():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                callback(device_type, old_name, new_name), loop)
+        except Exception:
+            pass
+
+    def _device_candidates(self, device_type: str) -> list:
+        """按优先级返回可尝试的候选设备：当前选择优先，然后是其余可用设备"""
+        candidates: list = []
+        try:
+            current = self._loopback_mic if device_type == "loopback" else self._input_mic
+            if current is not None:
+                candidates.append(current)
+
+            if device_type == "loopback":
+                speaker_ids = {s.id for s in sc.all_speakers()}
+                devices = [m for m in sc.all_microphones(include_loopback=True)
+                           if m.id in speaker_ids]
+            else:
+                devices = sc.all_microphones(include_loopback=False)
+
+            for device in devices:
+                if all(device.id != c.id for c in candidates):
+                    candidates.append(device)
+        except Exception as e:
+            logger.warning("List %s device candidates failed: %s", device_type, e)
+        return candidates
+
+    def _open_channel(self, device_type: str) -> tuple:
+        """依次尝试打开候选设备（loopback 或 input）
+
+        单个设备打不开（如蓝牙 HFP 端点非 float 混音格式）不拖垮另一路，
+        自动回退到下一个可用设备。
+
+        Returns:
+            (recorder, mic)：打开成功；recorder 尚未进入上下文，由调用方管理
+            (None, None)：所有候选设备均无法打开
+        """
+        for mic in self._device_candidates(device_type):
+            try:
+                recorder = mic.recorder(samplerate=self.sample_rate)
+                return recorder, mic
+            except Exception as e:
+                logger.error(
+                    "Open %s device '%s' failed: %s: %s",
+                    device_type, getattr(mic, "name", "?"), type(e).__name__, e,
+                )
+        return None, None
 
     @property
     def loopback_device_name(self) -> str:
@@ -338,38 +417,80 @@ class AudioCapture:
             restart_errors = 0  # 连续重启失败计数
             while self._is_active:
                 try:
-                    with self._loopback_mic.recorder(samplerate=self.sample_rate) as loopback_rec, \
-                         self._input_mic.recorder(samplerate=self.sample_rate) as input_rec:
+                    # 两路设备独立打开：单路失败自动回退候选设备，不拖垮另一路
+                    loopback_rec, loopback_mic = self._open_channel("loopback")
+                    input_rec, input_mic = self._open_channel("input")
+
+                    if loopback_rec is None and input_rec is None:
+                        raise RuntimeError(
+                            "no audio device could be opened (loopback & input both failed)"
+                        )
+
+                    # 设备与初始选择不一致（自动回退）时通知前端
+                    old_loopback = self._loopback_mic.name if self._loopback_mic else "none"
+                    old_input = self._input_mic.name if self._input_mic else "none"
+                    if loopback_mic is not None:
+                        if self._loopback_mic is None or loopback_mic.id != self._loopback_mic.id:
+                            logger.info("Loopback device auto-fallback: %s -> %s",
+                                        old_loopback, loopback_mic.name)
+                            self._fire_device_switched("loopback", old_loopback, loopback_mic.name)
+                        self._loopback_mic = loopback_mic
+                    else:
+                        logger.warning("Capture degraded: no loopback device available, "
+                                       "capturing microphone only")
+                        self._fire_device_switched("loopback", old_loopback, "none")
+                    if input_mic is not None:
+                        if self._input_mic is None or input_mic.id != self._input_mic.id:
+                            logger.info("Input device auto-fallback: %s -> %s",
+                                        old_input, input_mic.name)
+                            self._fire_device_switched("input", old_input, input_mic.name)
+                        self._input_mic = input_mic
+                    else:
+                        logger.warning("Capture degraded: no input device available, "
+                                       "capturing loopback only")
+                        self._fire_device_switched("input", old_input, "none")
+
+                    restart_errors = 0  # 至少一路设备成功打开，重置失败计数
+
+                    with contextlib.ExitStack() as stack:
+                        if loopback_rec is not None:
+                            loopback_rec = stack.enter_context(loopback_rec)
+                        if input_rec is not None:
+                            input_rec = stack.enter_context(input_rec)
 
                         logger.info(
                             "Capture loop started, loopback=%s, input=%s",
-                            self._loopback_mic.name if self._loopback_mic else "none",
-                            self._input_mic.name if self._input_mic else "none",
+                            loopback_mic.name if loopback_mic else "none",
+                            input_mic.name if input_mic else "none",
                         )
-                        
-                        restart_errors = 0  # 成功启动，重置失败计数
 
                         # 启动专用 loopback 读取线程
-                        self._loopback_reader_active = True
+                        self._loopback_reader_active = loopback_rec is not None
                         self._loopback_queue = queue.Queue(maxsize=10)
-                        self._loopback_reader_thread = threading.Thread(
-                            target=self._loopback_reader_loop,
-                            args=(loopback_rec,),
-                            daemon=True,
-                        )
-                        self._loopback_reader_thread.start()
+                        if loopback_rec is not None:
+                            self._loopback_reader_thread = threading.Thread(
+                                target=self._loopback_reader_loop,
+                                args=(loopback_rec,),
+                                daemon=True,
+                            )
+                            self._loopback_reader_thread.start()
 
                         while self._is_active:
                             if self._is_paused:
-                                loopback_rec.flush()
-                                input_rec.flush()
+                                if loopback_rec is not None:
+                                    loopback_rec.flush()
+                                if input_rec is not None:
+                                    input_rec.flush()
                                 time.sleep(0.1)
                                 continue
 
                             try:
                                 # 先读取麦克风（不会阻塞）
-                                mic_data = input_rec.record(numframes=self.chunk_size)
-                                mic_data = mic_data.mean(axis=1) if mic_data.ndim > 1 else mic_data
+                                if input_rec is not None:
+                                    mic_data = input_rec.record(numframes=self.chunk_size)
+                                    mic_data = mic_data.mean(axis=1) if mic_data.ndim > 1 else mic_data
+                                else:
+                                    mic_data = np.zeros(self.chunk_size, dtype=np.float32)
 
                                 # 读取系统音频（非阻塞，从专用读取线程的队列获取）
                                 try:
@@ -381,9 +502,11 @@ class AudioCapture:
                                     loopback_timeouts += 1
                                 loopback_data = loopback_data.mean(axis=1) if loopback_data.ndim > 1 else loopback_data
 
-                                # 混合两个通道：loopback 有效时混合，超时时只用麦克风全量
-                                if loopback_has_data:
+                                # 混合两个通道：两路都有时混合，仅一路时全量使用该路
+                                if loopback_has_data and input_rec is not None:
                                     mixed = (loopback_data * 0.6 + mic_data * 0.4).astype(np.float32)
+                                elif loopback_has_data:
+                                    mixed = loopback_data.astype(np.float32)
                                 else:
                                     mixed = mic_data.astype(np.float32)
 
@@ -449,20 +572,8 @@ class AudioCapture:
                     restart_errors += 1
                     logger.error(f"Capture loop restart error (#{restart_errors}): {type(e).__name__}: {e}")
 
-                    # 输入设备打不开时自动回退到系统默认麦克风
-                    if self._input_mic and restart_errors == 1:
-                        try:
-                            default_mic = sc.default_microphone()
-                            if default_mic.id != self._input_mic.id:
-                                logger.warning(
-                                    "Capture loop: falling back to default microphone: %s",
-                                    default_mic.name,
-                                )
-                                self._input_mic = default_mic
-                        except Exception:
-                            pass
-
                     # 连续失败超过 3 次，加大间隔避免日志刷屏
+                    # （蓝牙 HFP 端点在通话建立后才会出现，保留重试可自动恢复）
                     wait = 0.5 if restart_errors <= 3 else 5.0
                     time.sleep(wait)
                     # 继续外层 while，重试打开 recorder
@@ -540,15 +651,8 @@ class AudioCapture:
                 device_type, old_name, new_mic.name,
             )
 
-            # 触发回调通知前端
-            if self._on_device_switched:
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        self._on_device_switched(device_type, old_name, new_mic.name),
-                        asyncio.get_event_loop(),
-                    )
-                except Exception:
-                    pass
+            # 触发回调通知前端（手动切换总是通知，即便目标与当前设备相同）
+            self._fire_device_switched(device_type, old_name, new_mic.name, only_on_change=False)
 
             # 通知 capture loop 重建 recorder
             self._pending_recorder_restart = True
