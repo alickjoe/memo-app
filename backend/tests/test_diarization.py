@@ -9,7 +9,7 @@ import wave
 from unittest.mock import MagicMock
 
 import numpy as np
-from diarization.embedding import SAMPLING_RATE
+from diarization.embedding import SAMPLING_RATE, VoiceprintEngine
 from diarization.recluster import (
     _apply_to_db,
     _cluster_windows,
@@ -270,6 +270,114 @@ def test_recluster_meeting_missing_file(test_db, temp_data_dir):
     eng = FakeVoiceprintEngine()
     d = SpeakerDiarizer(engine=eng)
     assert _run(recluster_meeting("no-such-meeting", test_db, d)) == []
+
+
+# ==================== 引擎自愈安装 ====================
+
+
+class InstallTestEngine(VoiceprintEngine):
+    """VoiceprintEngine 替身：load() 可脚本化，不触发真实 torch 导入"""
+
+    def __init__(self, load_result: bool = False):
+        super().__init__()
+        self.load_result = load_result
+        self.load_calls = 0
+
+    def load(self):
+        self.load_calls += 1
+        return self.load_result
+
+
+def test_install_refuses_when_frozen(monkeypatch):
+    """frozen exe 模式拒绝安装（声纹按设计降级）"""
+    import sys
+
+    eng = InstallTestEngine()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    ok, msg = eng.install()
+    assert ok is False
+    assert "frozen" in msg
+    assert eng.load_calls == 0
+
+
+def test_install_refuses_when_already_loaded():
+    eng = InstallTestEngine()
+    eng._encoder = object()  # 模拟已加载
+    ok, msg = eng.install()
+    assert ok is True
+    assert msg == "already loaded"
+    assert eng.load_calls == 0
+
+
+def test_install_refuses_when_torch_missing(monkeypatch):
+    """torch 缺失时不装 resemblyzer（--no-deps 不会带上 torch，装了也没用）"""
+    import subprocess
+
+    eng = InstallTestEngine()
+
+    def fake_run(*args, **kwargs):
+        raise AssertionError("pip should not be called when torch missing")
+
+    monkeypatch.setattr(eng, "_torch_available", lambda: False)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, msg = eng.install()
+    assert ok is False
+    assert "torch" in msg
+
+
+def test_install_runs_pip_and_reloads(monkeypatch):
+    """pip 成功后清除失败标记并重试加载"""
+    import subprocess
+
+    eng = InstallTestEngine(load_result=True)
+    eng._load_error = "No module named 'resemblyzer'"
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(eng, "_torch_available", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, msg = eng.install()
+    assert ok is True
+    assert msg == "installed and loaded"
+    assert len(calls) == 1
+    assert "--no-deps" in calls[0] and "Resemblyzer==0.1.4" in calls[0]
+    assert eng._load_error is None
+    assert eng.load_calls == 1
+
+
+def test_install_pip_failure_returns_error(monkeypatch):
+    import subprocess
+
+    eng = InstallTestEngine()
+
+    def fake_run(cmd, **kwargs):
+        # 第一次失败，--user 回退也失败
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="permission denied")
+
+    monkeypatch.setattr(eng, "_torch_available", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, msg = eng.install()
+    assert ok is False
+    assert "permission denied" in msg
+
+
+def test_install_pip_timeout(monkeypatch):
+    import subprocess
+
+    eng = InstallTestEngine()
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 300)
+
+    monkeypatch.setattr(eng, "_torch_available", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, msg = eng.install()
+    assert ok is False
+    assert "timed out" in msg
 
 
 # ==================== utils ====================

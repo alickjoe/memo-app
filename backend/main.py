@@ -68,8 +68,9 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(vad._load_model())
     stt_engine = STTEngine()
     diarizer = SpeakerDiarizer()
-    # 声纹模型后台预加载（GE2E ~17MB，首次 ~2s），不阻塞启动与健康检查
-    asyncio.create_task(asyncio.to_thread(diarizer.engine.load))
+    # 声纹模型后台预加载（GE2E ~17MB，首次 ~2s），不阻塞启动与健康检查；
+    # torch 已装但 resemblyzer 缺失时（如老用户升级场景）自动补装
+    asyncio.create_task(_ensure_voiceprint_ready())
     summarizer = LLMSummarizer()
 
     logger.info("All engines initialized")
@@ -82,6 +83,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Memo Backend", version="0.1.0", lifespan=lifespan)
+
+
+async def _ensure_voiceprint_ready():
+    """启动后台任务：加载声纹模型；resemblyzer 缺失且 torch 可用时自动补装。
+
+    场景：torch 早已装好的用户（Silero VAD 正常）升级到带声纹功能的版本，
+    electron 的 installTorch 流程不会重跑，Resemblyzer 无人安装——这里自愈。
+    """
+    if diarizer is None:
+        return
+    if await asyncio.to_thread(diarizer.engine.load):
+        return
+    ok, msg = await asyncio.to_thread(diarizer.engine.install)
+    if ok:
+        logger.info("Voiceprint engine self-healed: resemblyzer auto-installed")
+    else:
+        logger.warning("Voiceprint engine self-heal failed: %s", msg)
 
 app.add_middleware(
     CORSMiddleware,
@@ -645,6 +663,15 @@ async def get_torch_status():
             "diarization_error": "torch not installed",
             "diarization_enabled": bool(diarizer.enabled) if diarizer else False,
         }
+
+
+@app.post("/api/system/install-resemblyzer")
+async def install_resemblyzer():
+    """安装声纹引擎 Resemblyzer 并加载（源码模式下可用；安装后即时生效，无需重启）"""
+    if not diarizer:
+        return {"success": False, "error": "diarizer not initialized"}
+    ok, msg = await asyncio.to_thread(diarizer.engine.install)
+    return {"success": ok, "message" if ok else "error": msg}
 
 
 @app.post("/api/system/install-torch")

@@ -161,6 +161,10 @@ const resources = {
         speakerIdStatusAvailable: 'Voiceprint engine ready',
         speakerIdStatusUnavailable: 'Voiceprint engine unavailable (sequential labels in use)',
         speakerIdStatusChecking: 'Detecting voiceprint engine...',
+        speakerIdInstall: 'Install Voiceprint Engine',
+        speakerIdInstalling: 'Installing voiceprint engine...',
+        speakerIdInstallSuccess: 'Voiceprint engine installed and ready',
+        speakerIdInstallFailed: 'Install failed',
       },
       meetingCard: {
         recording: 'Recording',
@@ -345,6 +349,10 @@ const resources = {
         speakerIdStatusAvailable: '声纹引擎就绪',
         speakerIdStatusUnavailable: '声纹引擎不可用（将使用顺序标签）',
         speakerIdStatusChecking: '正在检测声纹引擎...',
+        speakerIdInstall: '安装声纹引擎',
+        speakerIdInstalling: '正在安装声纹引擎...',
+        speakerIdInstallSuccess: '声纹引擎已安装并就绪',
+        speakerIdInstallFailed: '安装失败',
       },
       meetingCard: {
         recording: '录制中',

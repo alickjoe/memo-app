@@ -126,6 +126,62 @@ class VoiceprintEngine:
             logger.warning("Voiceprint engine unavailable: %s", e)
             return False
 
+    # ---------- 安装自愈 ----------
+
+    def install(self) -> tuple[bool, str]:
+        """pip 补装 Resemblyzer 并重试加载（源码模式自愈；frozen 模式拒绝）。
+
+        场景：torch 早已装好（Silero VAD 正常）的用户升级到带声纹功能的版本时，
+        electron 的 installTorch 流程不会触发，Resemblyzer 无人安装——
+        启动自检与设置页手动按钮都走这里。
+
+        Returns:
+            (成功与否, 说明信息)
+        """
+        import subprocess
+        import sys
+
+        if self._encoder is not None:
+            return True, "already loaded"
+        if getattr(sys, "frozen", False):
+            return False, "frozen mode: voiceprint engine not bundled (by design)"
+        if not self._torch_available():
+            # torch 缺失时装了 resemblyzer 也没用（--no-deps 不会带上 torch）
+            return False, "torch not installed; install PyTorch first (source mode required)"
+
+        base_cmd = [sys.executable, "-m", "pip", "install", "--no-deps",
+                    "--upgrade", "Resemblyzer==0.1.4"]
+        try:
+            proc = subprocess.run(base_cmd, capture_output=True, text=True, timeout=300)
+            if proc.returncode != 0:
+                # 系统 Python 无写权限时回退 --user
+                proc = subprocess.run(base_cmd + ["--user"],
+                                      capture_output=True, text=True, timeout=300)
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+                logger.warning("Resemblyzer install failed: %s", detail)
+                return False, detail
+        except subprocess.TimeoutExpired:
+            return False, "pip install timed out (5 minutes)"
+        except Exception as e:
+            return False, str(e)
+
+        logger.info("Resemblyzer installed, reloading voiceprint engine")
+        self._load_error = None  # 清除失败标记，允许重试加载
+        if self.load():
+            return True, "installed and loaded"
+        return False, self._load_error or "installed but load failed"
+
+    @staticmethod
+    def _torch_available() -> bool:
+        try:
+            import torch  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+
+
     # ---------- 嵌入 ----------
 
     def embed(self, pcm16_bytes: bytes) -> np.ndarray | None:
