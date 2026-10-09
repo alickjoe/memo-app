@@ -27,6 +27,11 @@ export default function Settings() {
     recording_vad_silence_frames: '8',
     recording_vad_speech_confirm_frames: '3',
     recording_vad_hangover_frames: '3',
+    diarization_enabled: 'true',
+    diarization_match_threshold: '0.7',
+    diarization_margin: '0.1',
+    diarization_max_speakers: '6',
+    diarization_recluster: 'true',
   })
   const [saved, setSaved] = useState(false)
   const [audioDevices, setAudioDevices] = useState<{ id: string; name: string; is_loopback: boolean }[]>([])
@@ -36,6 +41,9 @@ export default function Settings() {
     backend_mode: string
     vad_engine: string
     vad_error: string | null
+    diarization_available?: boolean | null
+    diarization_error?: string | null
+    diarization_enabled?: boolean
   } | null>(null)
   const [torchInstalling, setTorchInstalling] = useState(false)
   const [torchMessage, setTorchMessage] = useState('')
@@ -427,6 +435,91 @@ export default function Settings() {
                 />
               </div>
             </div>
+          </div>
+        </section>
+
+        {/* 说话人识别（声纹） */}
+        <section className="mb-8">
+          <h2 className="text-sm font-semibold text-gray-700 mb-4">{t('settings.speakerId')}</h2>
+          <p className="text-xs text-gray-400 mb-4">
+            {t('settings.speakerIdDesc')}
+          </p>
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <span
+                className={`w-2.5 h-2.5 rounded-full ${
+                  torchStatus
+                    ? torchStatus.diarization_available === true
+                      ? 'bg-green-500'
+                      : torchStatus.diarization_available === false
+                        ? 'bg-yellow-500'
+                        : 'bg-gray-300'
+                    : 'bg-gray-300'
+                }`}
+              />
+              <span className="text-sm text-gray-700">
+                {!torchStatus
+                  ? t('settings.speakerIdStatusChecking')
+                  : torchStatus.diarization_available === true
+                    ? t('settings.speakerIdStatusAvailable')
+                    : torchStatus.diarization_available === false
+                      ? `${t('settings.speakerIdStatusUnavailable')}${torchStatus.diarization_error ? ` (${torchStatus.diarization_error})` : ''}`
+                      : t('settings.speakerIdStatusChecking')}
+              </span>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={settings.diarization_enabled === 'true'}
+                onChange={(e) => setSettings({ ...settings, diarization_enabled: String(e.target.checked) })}
+              />
+              {t('settings.speakerIdEnabled')}
+            </label>
+            <div>
+              <label className="block text-sm text-gray-500 mb-1">{t('settings.speakerIdMatchThreshold')}</label>
+              <input
+                type="number"
+                min={0.5}
+                max={0.9}
+                step={0.05}
+                value={settings.diarization_match_threshold}
+                onChange={(e) => setSettings({ ...settings, diarization_match_threshold: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+              />
+              <p className="text-xs text-gray-400 mt-1">{t('settings.speakerIdMatchThresholdHint')}</p>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-500 mb-1">{t('settings.speakerIdMargin')}</label>
+              <input
+                type="number"
+                min={0.05}
+                max={0.3}
+                step={0.05}
+                value={settings.diarization_margin}
+                onChange={(e) => setSettings({ ...settings, diarization_margin: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+              />
+              <p className="text-xs text-gray-400 mt-1">{t('settings.speakerIdMarginHint')}</p>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-500 mb-1">{t('settings.speakerIdMaxSpeakers')}</label>
+              <input
+                type="number"
+                min={2}
+                max={10}
+                value={settings.diarization_max_speakers}
+                onChange={(e) => setSettings({ ...settings, diarization_max_speakers: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:border-primary-400"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={settings.diarization_recluster === 'true'}
+                onChange={(e) => setSettings({ ...settings, diarization_recluster: String(e.target.checked) })}
+              />
+              {t('settings.speakerIdRecluster')}
+            </label>
           </div>
         </section>
 

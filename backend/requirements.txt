@@ -19,6 +19,15 @@ aiosqlite>=0.20.0
 # VAD (optional, falls back to energy-based)
 # torch>=2.0.0
 
+# Voiceprint speaker identification (Windows source mode; torchaudio for mel filterbank)
+torch>=2.0.0; sys_platform == "win32"
+torchaudio>=2.0.0; sys_platform == "win32"
+# NOTE: Resemblyzer 0.1.4 is installed separately with `pip install --no-deps`
+# (dev.ps1 / electron python-bridge) to avoid its webrtcvad dependency,
+# which requires MSVC compilation on Windows. Runtime code never imports
+# webrtcvad (stubbed) or librosa/scipy (mel spectrogram replicated in
+# backend/diarization/embedding.py).
+
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.24.0

@@ -43,6 +43,12 @@ pyinstaller `
     --hidden-import aiosqlite `
     --hidden-import pyaudio `
     --hidden-import soundcard `
+    --exclude-module torch `
+    --exclude-module torchaudio `
+    --exclude-module resemblyzer `
+    --exclude-module webrtcvad `
+    --exclude-module librosa `
+    --exclude-module scipy `
     --clean `
     --noconfirm `
     backend/main.py
