@@ -93,6 +93,11 @@ export default function MeetingDetail() {
           loadMeeting()
           ws?.close()
           if (pollRef.current) clearInterval(pollRef.current)
+        } else if (data.type === 'speakers_updated') {
+          // 会后重聚类完成：说话人标签已重写，重新拉取
+          loadMeeting()
+        } else if (data.type === 'diarization_degraded') {
+          console.warn('[Memo] 声纹识别引擎不可用:', data.error)
         }
       }
       wsRef.current = ws

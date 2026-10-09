@@ -70,3 +70,8 @@ electron-builder.yml.local
 tmp/
 temp/
 *.tmp
+
+# Python virtualenvs
+.venv/
+venv/
+__pycache__/

@@ -102,6 +102,9 @@ export default function Recording() {
           } else {
             setInputDeviceName(data.new_device)
           }
+        } else if (data.type === 'diarization_degraded') {
+          setDeviceNotification(t('recording.diarizationDegraded'))
+          setTimeout(() => setDeviceNotification(null), 8000)
         }
       }
 

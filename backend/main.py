@@ -14,6 +14,7 @@ from datetime import datetime
 
 from audio.capture import AudioCapture
 from audio.vad import VoiceActivityDetector
+from diarization.recluster import recluster_meeting
 from diarization.speaker import SpeakerDiarizer
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,6 +68,8 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(vad._load_model())
     stt_engine = STTEngine()
     diarizer = SpeakerDiarizer()
+    # 声纹模型后台预加载（GE2E ~17MB，首次 ~2s），不阻塞启动与健康检查
+    asyncio.create_task(asyncio.to_thread(diarizer.engine.load))
     summarizer = LLMSummarizer()
 
     logger.info("All engines initialized")
@@ -172,6 +175,17 @@ async def start_recording(request: dict = None):
         vad_hangover_frames=int(override.get("vad_hangover_frames", defaults.vad_hangover_frames)),
     )
     _active_recording_configs[meeting_id] = recording_config
+
+    # 应用说话人识别设置并重置会话状态（防跨会议质心污染）
+    if diarizer:
+        diar_cfg = await _load_diarization_config()
+        diarizer.configure(
+            match_threshold=diar_cfg["match_threshold"],
+            margin=diar_cfg["margin"],
+            max_speakers=diar_cfg["max_speakers"],
+            enabled=diar_cfg["enabled"],
+        )
+        diarizer.reset()
 
     try:
         # 设置设备切换回调：通知前端（手动切换时触发）
@@ -598,6 +612,16 @@ async def get_torch_status():
         import torch
         version = torch.__version__
         cuda_available = torch.cuda.is_available()
+        # 声纹引擎状态（懒加载，可能尚未尝试）
+        vp_available: bool | None = None
+        vp_error: str | None = None
+        if diarizer is not None:
+            if diarizer.engine.available:
+                vp_available = True
+            elif diarizer.engine.load_error is not None:
+                vp_available = False
+                vp_error = diarizer.engine.load_error
+            # 两者皆空 = 尚未加载，返回 None 让前端显示"检测中"
         return {
             "available": True,
             "version": version,
@@ -605,6 +629,9 @@ async def get_torch_status():
             "backend_mode": "frozen" if is_frozen else "source",
             "vad_engine": vad_engine,
             "vad_error": vad_error,
+            "diarization_available": vp_available,
+            "diarization_error": vp_error,
+            "diarization_enabled": bool(diarizer.enabled) if diarizer else False,
         }
     except ImportError:
         return {
@@ -614,6 +641,9 @@ async def get_torch_status():
             "backend_mode": "frozen" if is_frozen else "source",
             "vad_engine": vad_engine,
             "vad_error": vad_error,
+            "diarization_available": False,
+            "diarization_error": "torch not installed",
+            "diarization_enabled": bool(diarizer.enabled) if diarizer else False,
         }
 
 
@@ -723,6 +753,57 @@ RECORDING_CONFIG_KEYS = [
     "recording_vad_hangover_frames",
 ]
 
+# 说话人识别配置的 settings key
+DIARIZATION_CONFIG_KEYS = [
+    "diarization_enabled",              # 总开关（默认 true）
+    "diarization_match_threshold",      # 余弦命中门限（默认 0.70）
+    "diarization_margin",               # 最优/次优差值门限（默认 0.10）
+    "diarization_max_speakers",         # 说话人上限（默认 6）
+    "diarization_recluster",            # 会后全局重聚类开关（默认 true）
+]
+
+
+async def _load_diarization_config() -> dict:
+    """从 settings 表加载说话人识别配置（含默认值）"""
+    db = await get_db()
+    cursor = await db.execute("SELECT key, value FROM settings")
+    rows = await cursor.fetchall()
+    s = {row[0]: row[1] for row in rows}
+
+    def _bool(key: str, default: bool) -> bool:
+        v = s.get(key)
+        if v is None or v == "":
+            return default
+        return str(v).lower() != "false"
+
+    def _float(key: str, default: float) -> float:
+        try:
+            return float(s[key]) if s.get(key) else default
+        except (TypeError, ValueError):
+            return default
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return int(float(s[key])) if s.get(key) else default
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "enabled": _bool("diarization_enabled", True),
+        "match_threshold": _float("diarization_match_threshold", 0.70),
+        "margin": _float("diarization_margin", 0.10),
+        "max_speakers": _int("diarization_max_speakers", 6),
+        "recluster": _bool("diarization_recluster", True),
+    }
+
+
+async def _recluster_enabled() -> bool:
+    """会后重聚类是否启用（设置项 + diarizer 存在）"""
+    if not diarizer:
+        return False
+    cfg = await _load_diarization_config()
+    return cfg["recluster"]
+
 
 async def _load_recording_defaults() -> RecordingConfig:
     """从 settings 表加载录音默认配置"""
@@ -769,16 +850,26 @@ async def _transcribe_segment(
     segment_start: float, segment_end: float,
     prev_segment_tail: bytearray, speaker_idx: int,
     segment_count: int, reason: str,
+    last_speaker_label: str = "",
 ):
     """处理单个语音段：说话人识别 + STT 转写 + 存储 + 推送
-    
+
     Returns:
-        (new_segment_count, new_discarded_count, next_context_tail, new_speaker_idx)
+        (new_segment_count, new_discarded_count, next_context_tail,
+         new_speaker_idx, new_last_speaker_label)
     """
-    speaker_label = await diarizer.identify(segment_bytes)
+    speaker_label = None
+    if diarizer and diarizer.worth_try:
+        speaker_label = await diarizer.identify(segment_bytes)
+        if speaker_label is None:
+            # 引擎可用但嵌入失败/段过短：沿用上一段说话人，保持标签连贯
+            speaker_label = last_speaker_label or None
     if not speaker_label:
         speaker_idx += 1
         speaker_label = f"Speaker {chr(65 + (speaker_idx % 26))}"
+        # 声纹引擎确认加载失败时，向前端推送一次性降级提示（用户主动关闭不提示）
+        if diarizer and diarizer.enabled and diarizer.engine.load_error:
+            asyncio.create_task(_push_diarization_degraded(meeting_id))
 
     asr_input = bytes(prev_segment_tail) + segment_bytes
     text = await stt_engine.transcribe_with_validation(asr_input)
@@ -823,7 +914,40 @@ async def _transcribe_segment(
     tail_len = min(RecordingConfig.context_bytes, len(segment_bytes))
     next_tail = bytearray(segment_bytes[-tail_len:])
 
-    return segment_count, discarded, next_tail, speaker_idx
+    return segment_count, discarded, next_tail, speaker_idx, speaker_label
+
+
+_diarization_hint_sent: set[str] = set()
+
+
+async def _push_diarization_degraded(meeting_id: str):
+    """声纹引擎不可用时向前端推送一次性提示（每会议一次）"""
+    if meeting_id in _diarization_hint_sent or not diarizer:
+        return
+    _diarization_hint_sent.add(meeting_id)
+    msg = {
+        "type": "diarization_degraded",
+        "message": "声纹识别引擎不可用，说话人标签按出现顺序编号",
+        "error": diarizer.engine.load_error or "unknown",
+    }
+    logger.warning("Diarization degraded for meeting %s: %s", meeting_id, msg["error"])
+    for ws in ws_connections.get(meeting_id, []):
+        try:
+            await ws.send_json(msg)
+        except Exception:
+            pass
+
+
+async def _push_speakers_updated(meeting_id: str, speakers: list[str]):
+    """会后重聚类完成后向前端推送说话人更新事件"""
+    for ws in ws_connections.get(meeting_id, []):
+        try:
+            await ws.send_json({
+                "type": "speakers_updated",
+                "speakers": speakers,
+            })
+        except Exception:
+            pass
 
 
 async def process_audio_pipeline(meeting_id: str):
@@ -863,6 +987,7 @@ async def process_audio_pipeline(meeting_id: str):
     audio_offset = 0.0
     segment_start_offset = 0.0
     speaker_idx = 0
+    last_speaker_label = ""  # 上一段说话人（短段/嵌入失败时沿用）
     chunk_read_count = 0
     timeout_count = 0
     silence_count = 0
@@ -894,12 +1019,13 @@ async def process_audio_pipeline(meeting_id: str):
                 if fixed_accumulated >= config.fixed_chunk_duration:
                     segment_bytes = bytes(speech_buffer)
                     seg_duration = len(segment_bytes) / (16000 * 2)
-                    segment_count, new_discarded, prev_segment_tail, speaker_idx = \
-                        await _transcribe_segment(
-                            meeting_id, db, segment_bytes, seg_duration,
-                            segment_start_offset, audio_offset + chunk_duration,
-                            prev_segment_tail, speaker_idx, segment_count, "fixed_chunk",
-                        )
+                    (segment_count, new_discarded, prev_segment_tail,
+                     speaker_idx, last_speaker_label) = await _transcribe_segment(
+                        meeting_id, db, segment_bytes, seg_duration,
+                        segment_start_offset, audio_offset + chunk_duration,
+                        prev_segment_tail, speaker_idx, segment_count, "fixed_chunk",
+                        last_speaker_label,
+                    )
                     discarded_count += new_discarded
                     speech_buffer = bytearray()
                     fixed_accumulated = 0.0
@@ -945,12 +1071,13 @@ async def process_audio_pipeline(meeting_id: str):
                             segment_start = segment_start_offset
                             segment_end = audio_offset + chunk_duration
 
-                            segment_count, new_discarded, prev_segment_tail, speaker_idx = \
-                                await _transcribe_segment(
-                                    meeting_id, db, segment_bytes, seg_duration,
-                                    segment_start, segment_end,
-                                    prev_segment_tail, speaker_idx, segment_count, reason,
-                                )
+                            (segment_count, new_discarded, prev_segment_tail,
+                             speaker_idx, last_speaker_label) = await _transcribe_segment(
+                                meeting_id, db, segment_bytes, seg_duration,
+                                segment_start, segment_end,
+                                prev_segment_tail, speaker_idx, segment_count, reason,
+                                last_speaker_label,
+                            )
                             discarded_count += new_discarded
                         else:
                             logger.debug(
@@ -986,15 +1113,19 @@ async def process_audio_pipeline(meeting_id: str):
             if text:
                 seg_dur = len(speech_buffer) / (16000 * 2)
                 segment_count += 1
+                # 尾段说话人：声纹可用时沿用上一段（尾段常为半句），否则顺序编号
+                final_speaker = last_speaker_label or \
+                    f"Speaker {chr(65 + ((speaker_idx + 1) % 26))}"
                 await db.execute(
                     "INSERT INTO transcript_segments (meeting_id, speaker, start_time, end_time, text) VALUES (?, ?, ?, ?, ?)",
-                    (meeting_id, f"Speaker {chr(65 + ((speaker_idx + 1) % 26))}", segment_start_offset, audio_offset, text),
+                    (meeting_id, final_speaker, segment_start_offset, audio_offset, text),
                 )
                 await db.commit()
                 logger.info("Pipeline: final segment transcribed: dur=%.1fs", seg_dur)
 
         # 清理会议配置
         _active_recording_configs.pop(meeting_id, None)
+        _diarization_hint_sent.discard(meeting_id)
 
         duration = int(audio_offset)
         await db.execute(
@@ -1002,6 +1133,12 @@ async def process_audio_pipeline(meeting_id: str):
             (duration, "processing", meeting_id),
         )
         await db.commit()
+
+        # 会后全局重聚类（声纹引擎可用 + 未关闭设置项时）：修正在线标签漂移
+        if await _recluster_enabled():
+            speakers = await recluster_meeting(meeting_id, db, diarizer)
+            if speakers:
+                await _push_speakers_updated(meeting_id, speakers)
 
         cursor = await db.execute(
             "SELECT speaker, text FROM transcript_segments WHERE meeting_id = ? ORDER BY start_time",
@@ -1067,10 +1204,21 @@ async def _do_retranscribe(meeting_id: str, audio_path: str, version: int):
             len(segments), version, meeting_id,
         )
 
-        # 用新版本转写生成纪要
-        transcript_text = "\n".join(
-            [f"[Speaker]: {seg['text']}" for seg in segments]
+        # 会后重聚类：用全量录音修正新版本段的说话人标签
+        speakers: list[str] = []
+        if await _recluster_enabled():
+            speakers = await recluster_meeting(meeting_id, db, diarizer, audio_path)
+            if speakers:
+                await _push_speakers_updated(meeting_id, speakers)
+
+        # 用新版本转写生成纪要（重聚类后从 DB 读取，带上真实说话人标签）
+        cursor = await db.execute(
+            "SELECT speaker, text FROM transcript_segments "
+            "WHERE meeting_id = ? AND version = ? ORDER BY start_time",
+            (meeting_id, version),
         )
+        rows = await cursor.fetchall()
+        transcript_text = "\n".join([f"[{row[0]}]: {row[1]}" for row in rows])
         await generate_minutes(meeting_id, transcript_text)
 
         # 更新状态
@@ -1134,14 +1282,21 @@ async def process_imported_audio(meeting_id: str, file_path: str):
 
             offset += len(chunk) / 32000.0
 
-        # 生成纪要
+        # 会后重聚类：导入音频全部硬编码 Speaker A，重聚类按音色重写标签
+        speakers: list[str] = []
+        if await _recluster_enabled():
+            speakers = await recluster_meeting(meeting_id, db, diarizer, file_path)
+            if speakers:
+                await _push_speakers_updated(meeting_id, speakers)
+
+        # 生成纪要（带上说话人标签）
         db = await get_db()
         cursor = await db.execute(
-            "SELECT text FROM transcript_segments WHERE meeting_id = ? ORDER BY start_time",
+            "SELECT speaker, text FROM transcript_segments WHERE meeting_id = ? ORDER BY start_time",
             (meeting_id,),
         )
         rows = await cursor.fetchall()
-        transcript_text = "\n".join([row[0] for row in rows])
+        transcript_text = "\n".join([f"[{row[0]}]: {row[1]}" for row in rows])
 
         if transcript_text:
             await generate_minutes(meeting_id, transcript_text)

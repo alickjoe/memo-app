@@ -420,6 +420,16 @@ export function installTorch(): Promise<{ success: boolean; message: string }> {
       return { success: false, message: `PyTorch install failed: ${errMsg}` }
     }
 
+    // Step 2.5: 安装声纹引擎（说话人识别，容错——失败仅降级不阻塞 VAD）
+    // --no-deps 规避 webrtcvad 在 Windows 的源码编译；运行时依赖 torch 已在 Step 2 装好
+    console.log(`[Python Bridge] Step 2.5/3: Installing Resemblyzer (voiceprint) via ${pythonPath}...`)
+    const step25 = await spawnPromise(pythonPath, [
+      '-m', 'pip', 'install', '--no-deps', '--upgrade', 'Resemblyzer==0.1.4',
+    ], 300_000)
+    if (step25.code !== 0) {
+      console.warn(`[Python Bridge] Resemblyzer install skipped/failed: ${step25.stderr.slice(-300)}`)
+    }
+
     // Step 3: 验证所有依赖均可导入
     console.log('[Python Bridge] Step 3/3: Verifying all dependencies...')
     if (verifyAllDepsAvailable(pythonPath)) {

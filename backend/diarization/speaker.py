@@ -1,89 +1,135 @@
 """
-说话人分离模块 - 基于能量和时段的简单聚类方案
+说话人分离模块 - 基于声纹嵌入（d-vector）的在线增量聚类
+
+匹配策略（双门限）：
+- 与各说话人质心算余弦相似度，取最优 best 与次优 second
+- best >= match_threshold 且 (best - second) >= margin → 命中既有说话人
+- 否则说话人未满上限 → 新建
+- 超上限 → 强制归入最相似簇（不更新质心，防错误拉拢）
+
+降级策略：
+- engine 未注入或加载失败（如 frozen exe 无 torch）→ identify() 返回 None，
+  调用方回退顺序标签（Speaker A/B/...），主流程不受影响
 """
+import asyncio
 import logging
 
 import numpy as np
+
+from diarization.embedding import VoiceprintEngine
 
 logger = logging.getLogger("memo.diarization")
 
 
 class SpeakerDiarizer:
-    """简化的说话人分离器"""
+    """声纹嵌入 + 在线增量聚类的说话人分离器"""
 
-    MAX_SPEAKERS = 4   # 最大说话人数上限
-    MATCH_THRESHOLD = 2.0  # 匹配阈值，越大越宽松
+    MAX_SPEAKERS = 6          # 说话人上限（默认值，可被 configure 覆盖）
+    MATCH_THRESHOLD = 0.70    # 余弦相似度命中门限（默认值）
+    MARGIN = 0.10             # 最优与次优的差值门限（默认值）
+    EMA_ALPHA = 0.20          # 质心更新速率
 
-    def __init__(self):
-        self._speaker_embeddings: dict[str, np.ndarray] = {}
+    def __init__(self, engine: VoiceprintEngine | None = None):
+        self.engine = engine or VoiceprintEngine()
+        self._centroids: dict[str, np.ndarray] = {}
         self._next_speaker_id = 0
+        # 实例级可配置参数（settings 覆盖类默认值）
+        self.max_speakers = self.MAX_SPEAKERS
+        self.match_threshold = self.MATCH_THRESHOLD
+        self.margin = self.MARGIN
+        # 总开关（diarization_enabled 设置项）
+        self.enabled = True
+
+    @property
+    def worth_try(self) -> bool:
+        """当前是否值得尝试声纹识别（enabled 且引擎未确认不可用）。
+
+        available=True 或尚未尝试过加载（load_error 为 None）时为 True；
+        加载已失败（如 frozen exe 无 torch）后恒为 False，调用方可直接走顺序标签。
+        """
+        return self.enabled and (self.engine.available or self.engine.load_error is None)
+
+    # ---------- 配置 ----------
+
+    def configure(
+        self,
+        match_threshold: float | None = None,
+        margin: float | None = None,
+        max_speakers: int | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        """运行时覆盖参数（来自 settings 表）"""
+        if match_threshold is not None and match_threshold > 0:
+            self.match_threshold = float(match_threshold)
+        if margin is not None and margin >= 0:
+            self.margin = float(margin)
+        if max_speakers is not None and max_speakers >= 1:
+            self.max_speakers = int(max_speakers)
+        if enabled is not None:
+            self.enabled = bool(enabled)
+
+    # ---------- 识别 ----------
 
     async def identify(self, audio_bytes: bytes) -> str | None:
-        """识别说话人"""
+        """识别说话人。
+
+        Returns:
+            命中既有说话人或成功新建时返回其 label；
+            引擎不可用 / 段过短 / 嵌入失败时返回 None（调用方沿用前段标签）。
+        """
         try:
-            # 提取简单的音频特征（能量 + 过零率）
-            features = self._extract_features(audio_bytes)
+            if not self.worth_try:
+                return None
 
-            # 查找最相似的已有说话人
-            best_match = None
-            best_score = float('inf')
+            # 嵌入是 CPU 密集调用（~100ms/段），放线程池避免阻塞事件循环
+            embed = await asyncio.to_thread(self.engine.embed, audio_bytes)
+            if embed is None:
+                return None
 
-            for speaker_id, embedding in self._speaker_embeddings.items():
-                score = np.linalg.norm(features - embedding)
-                if score < best_score and score < self.MATCH_THRESHOLD:
-                    best_score = score
-                    best_match = speaker_id
-
-            if best_match:
-                # 更新已有说话人的特征（移动平均）
-                self._speaker_embeddings[best_match] = (
-                    self._speaker_embeddings[best_match] * 0.7 + features * 0.3
-                )
-                return best_match
-            else:
-                # 达到上限后不再创建新说话人，强制归入最相似的
-                if len(self._speaker_embeddings) >= self.MAX_SPEAKERS:
-                    best_any = min(
-                        self._speaker_embeddings.keys(),
-                        key=lambda sid: np.linalg.norm(self._speaker_embeddings[sid] - features),
-                    )
-                    self._speaker_embeddings[best_any] = (
-                        self._speaker_embeddings[best_any] * 0.7 + features * 0.3
-                    )
-                    return best_any
-
-                # 新说话人
-                self._next_speaker_id += 1
-                speaker_label = f"Speaker {chr(65 + (self._next_speaker_id - 1) % 26)}"
-                self._speaker_embeddings[speaker_label] = features
-                return None  # 返回 None 由调用方分配标签
-
+            return self._assign(embed)
         except Exception as e:
-            logger.warning(f"Diarization failed: {e}")
+            logger.warning("Diarization failed: %s", e)
             return None
 
-    def _extract_features(self, audio_bytes: bytes) -> np.ndarray:
-        """提取音频特征向量"""
-        import struct
+    def _assign(self, embed: np.ndarray) -> str | None:
+        """双门限增量聚类（纯逻辑，供测试直接调用）"""
+        ids = list(self._centroids.keys())
+        if not ids:
+            return self._create_speaker(embed)
 
-        if len(audio_bytes) < 2:
-            return np.zeros(4)
+        centroid_matrix = np.stack([self._centroids[sid] for sid in ids])
+        sims = centroid_matrix @ embed  # L2 归一化向量的内积即余弦相似度
+        order = np.argsort(sims)[::-1]
+        best_idx, best = order[0], float(sims[order[0]])
+        second = float(sims[order[1]]) if len(order) > 1 else -1.0
 
-        samples = struct.unpack(f'{len(audio_bytes) // 2}h', audio_bytes)
-        if len(samples) == 0:
-            return np.zeros(4)
+        if best >= self.match_threshold and (best - second) >= self.margin:
+            sid = ids[best_idx]
+            # 命中才更新质心（EMA），未命中不更新，避免错误拉拢
+            self._centroids[sid] = self._centroids[sid] * (1 - self.EMA_ALPHA) \
+                + embed * self.EMA_ALPHA
+            return sid
 
-        samples_np = np.array(samples, dtype=np.float32) / 32768.0
+        # 未命中：未满上限 → 新建；超上限 → 强制归入最相似簇（不更新质心）
+        if len(ids) >= self.max_speakers:
+            return ids[best_idx]
+        return self._create_speaker(embed)
 
-        # 特征: [RMS能量, 过零率, 频谱质心近似, 峰度]
-        rms = np.sqrt(np.mean(samples_np ** 2))
-        zcr = np.sum(np.abs(np.diff(np.sign(samples_np)))) / (2 * len(samples_np))
-        spectral_centroid = np.sum(np.abs(np.diff(samples_np))) / len(samples_np)
-        kurtosis = np.mean((samples_np - np.mean(samples_np)) ** 4) / (np.std(samples_np) ** 4 + 1e-10)
+    def _create_speaker(self, embed: np.ndarray) -> str:
+        """新建说话人，返回其 label"""
+        self._next_speaker_id += 1
+        sid = f"Speaker {chr(65 + (self._next_speaker_id - 1) % 26)}"
+        self._centroids[sid] = embed
+        logger.debug("Diarization: new speaker %s (total=%d)", sid, self._next_speaker_id)
+        return sid
 
-        return np.array([rms, zcr, spectral_centroid, kurtosis])
+    # ---------- 状态 ----------
+
+    @property
+    def speaker_count(self) -> int:
+        return len(self._centroids)
 
     def reset(self):
-        """重置说话人记录"""
-        self._speaker_embeddings.clear()
+        """重置说话人记录（每次录音开始时调用）"""
+        self._centroids.clear()
         self._next_speaker_id = 0

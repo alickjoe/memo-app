@@ -1,4 +1,4 @@
-﻿# Memo App - One-click dev environment launcher (venv)
+# Memo App - One-click dev environment launcher (venv)
 # Usage: .\dev.ps1 [-BackendOnly] [-FrontendOnly]
 param(
     [switch]$BackendOnly,
@@ -35,6 +35,13 @@ if (-not (Test-Path (Join-Path $sitePkgs "fastapi"))) {
         exit 1
     }
     Write-Host "[OK]  Dependencies installed" -ForegroundColor Green
+    # 声纹引擎（说话人识别，容错：--no-deps 规避 webrtcvad 编译；失败仅降级）
+    & $venvPython -m pip install --no-deps -q "Resemblyzer==0.1.4" 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[OK]  Voiceprint engine (Resemblyzer) installed" -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] Resemblyzer not installed - speaker identification will use sequential labels" -ForegroundColor Yellow
+    }
 } else {
     Write-Host "[OK]  Dependencies already installed" -ForegroundColor Green
 }
