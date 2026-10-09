@@ -48,6 +48,8 @@ export default function Settings() {
   const [torchInstalling, setTorchInstalling] = useState(false)
   const [torchMessage, setTorchMessage] = useState('')
   const [torchRestarting, setTorchRestarting] = useState(false)
+  const [resemblyzerInstalling, setResemblyzerInstalling] = useState(false)
+  const [resemblyzerMessage, setResemblyzerMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [pythonInfo, setPythonInfo] = useState<{ source: 'managed' | 'system' | 'none'; path: string | null } | null>(null)
   const [uninstallingPython, setUninstallingPython] = useState(false)
 
@@ -99,6 +101,27 @@ export default function Settings() {
       }
     } catch (err) {
       console.error('Failed to load torch status:', err)
+    }
+  }
+
+  const handleInstallResemblyzer = async () => {
+    setResemblyzerInstalling(true)
+    setResemblyzerMessage(null)
+    try {
+      const backendUrl = await window.electronAPI?.getBackendUrl()
+      const res = await fetch(`${backendUrl}/api/system/install-resemblyzer`, { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        setResemblyzerMessage({ ok: true, text: t('settings.speakerIdInstallSuccess') })
+        // 引擎已加载，刷新状态变绿
+        await loadTorchStatus()
+      } else {
+        setResemblyzerMessage({ ok: false, text: `${t('settings.speakerIdInstallFailed')}: ${data.error || ''}`.slice(0, 200) })
+      }
+    } catch (err) {
+      setResemblyzerMessage({ ok: false, text: String(err) })
+    } finally {
+      setResemblyzerInstalling(false)
     }
   }
 
@@ -467,6 +490,22 @@ export default function Settings() {
                       : t('settings.speakerIdStatusChecking')}
               </span>
             </div>
+            {torchStatus && torchStatus.diarization_available === false && torchStatus.available && (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleInstallResemblyzer}
+                  disabled={resemblyzerInstalling}
+                  className="px-3 py-1.5 text-sm bg-primary-500 text-white rounded-md hover:bg-primary-600 disabled:opacity-50"
+                >
+                  {resemblyzerInstalling ? t('settings.speakerIdInstalling') : t('settings.speakerIdInstall')}
+                </button>
+                {resemblyzerMessage && (
+                  <span className={`text-xs ${resemblyzerMessage.ok ? 'text-green-600' : 'text-red-500'}`}>
+                    {resemblyzerMessage.text}
+                  </span>
+                )}
+              </div>
+            )}
             <label className="flex items-center gap-2 text-sm text-gray-700">
               <input
                 type="checkbox"
