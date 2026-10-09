@@ -4,11 +4,17 @@
 在线识别允许出错（同一人被拆成多个 label / 两人被合并）；录音结束后用全量音频
 做离线重聚类修正：
 1. 读录音 WAV（16kHz mono PCM16，capture.py 持久化于 ~/.memo/recordings/）
-2. 能量法扫描语音区间 → 切 3s 窗（步长 2s，重叠防切在换人点）
-3. 批量声纹嵌入 → leader 聚类 + 平均链接凝聚合并（纯 numpy，无 sklearn）
+2. 能量法扫描语音区间 → 切 2s 窗（步长 1s，重叠防切在换人点）
+3. 批量声纹嵌入 → 平均链接层次聚类（Lance-Williams 增量，纯 numpy 无 sklearn）
+   → 小簇（<3 窗）按 margin 规则并入大簇或弃权
 4. 簇按首次出现时间重命名 Speaker A/B/C...
 5. 按时间重叠多数票映射回 transcript_segments（仅当前最新 version），重写 speaker
 6. 失败静默降级（记日志，不影响会议收尾流程）
+
+算法说明：不做顺序贪心分配（早期错误质心会级联污染），直接在全量成对相似度矩阵上
+做标准平均链接 AHC；跨换人点的混合窗与两簇相似度都中等，平均链接下自然沉到
+小簇/单例，由小簇归属规则兜底。门限在真实会议音频上标定（同人 0.75-0.88 /
+异人 0.42-0.64，MERGE=0.64-0.66 簇数最稳定）。
 """
 import asyncio
 import logging
@@ -22,15 +28,15 @@ from diarization.embedding import SAMPLING_RATE
 
 logger = logging.getLogger("memo.diarization")
 
-WINDOW_SEC = 2.0        # 声纹窗口时长（1.6s partial 的可靠下限之上，纯窗概率高）
+WINDOW_SEC = 2.0        # 声纹窗口时长（1.6s partial 的可靠下限之上）
 STEP_SEC = 1.0          # 窗滑动步长（1s 重叠；换人点两侧总有纯窗锚定簇）
-MIN_REGION_SEC = 2.0    # 短于此的语音区间不参与聚类
-MIN_WINDOW_SEC = 2.0    # 短于此的尾窗丢弃
-ASSIGN_SIM = 0.80       # 纯窗分配门限：与簇质心相似度达到才算"干净归属"
-CREATE_SIM = 0.62       # 建新簇门限：与所有簇都低于此值 → 视为新说话人；
-                        # 介于两者之间（0.62~0.80）的窗视为混合窗/不确定窗 → 弃权
-PASS2_MARGIN = 0.08     # 第二遍复评的最优/次优最小差值（防混合窗误归）
-MERGE_SIM = 0.75        # 凝聚合并的平均链接相似度门限
+MIN_REGION_SEC = 1.2    # 短于此的语音区间不参与聚类（1.2s 即可产出 1 个可靠 partial）
+MIN_WINDOW_SEC = 1.2    # 短于此的尾窗丢弃
+MAX_WINDOWS = 3000      # 长音频自适应拉大步长，控制相似度矩阵内存（3000² ≈ 36MB）
+MERGE_SIM = 0.66        # AHC 平均链接合并门限（真实音频标定，0.64-0.66 簇数稳定）
+ASSIGN_SIM = 0.70       # 小簇/单例并入大簇的质心相似度门限
+SMALL_MARGIN = 0.08     # 小簇归属的最优/次优最小差值
+MIN_CLUSTER_WINDOWS = 3 # 少于此窗数的簇不视为独立说话人（并入或弃权）
 
 
 def recordings_path(meeting_id: str) -> str:
@@ -95,7 +101,10 @@ def _extract_embeddings(engine, path: str):
     windows = []   # [(start_sec, end_sec)] 绝对时间
     wavs = []      # 对应 float32 波形
     win_size = int(WINDOW_SEC * SAMPLING_RATE)
-    step_size = int(STEP_SEC * SAMPLING_RATE)
+    # 长音频自适应步长：控制窗数上限（相似度矩阵 O(n²) 内存）
+    total_speech = sum(e - s for s, e in regions) / SAMPLING_RATE
+    step_sec = max(STEP_SEC, total_speech / MAX_WINDOWS)
+    step_size = int(step_sec * SAMPLING_RATE)
     for region_start, region_end in regions:
         region = wav[region_start:region_end]
         if len(region) < int(MIN_REGION_SEC * SAMPLING_RATE):
@@ -184,98 +193,75 @@ def _speech_regions(wav: np.ndarray) -> list[tuple[int, int]]:
 
 
 def _cluster_windows(embeddings: np.ndarray) -> list[str]:
-    """两遍聚类，专门处理跨换人点的混合窗。
+    """标准平均链接层次聚类（Lance-Williams 增量）+ 小簇归属。
 
-    混合窗（窗内含两人）的嵌入落在两簇之间，若强制归属会把所有簇"桥接"合并。
-    策略：不确定的窗弃权（不产生标签，也不污染簇质心）。
+    不做顺序贪心分配：早期错误质心会级联污染（真实音频实测覆盖率仅 22%）。
+    直接在全量成对相似度矩阵上 AHC，混合窗（跨换人点）与两簇的相似度都中等，
+    平均链接下自然沉到小簇/单例，由小簇归属规则兜底。
 
-    阶段 1（建簇）：逐窗扫描——
-      - 无簇 → 建新簇
-      - best >= ASSIGN_SIM → 归属（并更新质心均值）
-      - best < CREATE_SIM → 建新簇（明显的新说话人）
-      - 中间地带 → 弃权（可能是混合窗，也可能是相近音色，等阶段 2 复评）
-    阶段 2（复评弃权窗，用完整簇集）：best >= ASSIGN_SIM 且 margin >= PASS2_MARGIN
-      → 归属；否则保持弃权。
-    阶段 3：平均链接凝聚合并（只合并不确定窗之外的簇）。
+    门限在真实会议音频上标定：同人窗对 0.75-0.88 / 异人 0.42-0.64，
+    MERGE_SIM=0.64-0.66 时簇数最稳定。
 
     Returns:
-        每窗的临时簇 label；弃权窗为 ""（空串，不参与落库投票）。
+        每窗的临时簇 label（"c0"、"c1"...）；弃权窗为 ""（不参与落库投票）。
     """
     n = len(embeddings)
-    cluster_ids = np.full(n, -1, dtype=int)  # -1 = 弃权
-    centroids: list[np.ndarray] = []
-    counts: list[int] = []
+    if n == 0:
+        return []
 
-    def assign(i: int, cid: int) -> None:
-        cluster_ids[i] = cid
-        c = centroids[cid]
-        centroids[cid] = (c * counts[cid] + embeddings[i]) / (counts[cid] + 1)
-        counts[cid] += 1
+    S = embeddings @ embeddings.T  # L2 归一化向量的内积即余弦相似度
+    U = S.copy()
+    np.fill_diagonal(U, -2.0)
+    sizes = np.ones(n)
+    members: list[list[int]] = [[i] for i in range(n)]
+    alive = np.ones(n, dtype=bool)
 
-    # ---- 阶段 1 ----
-    for i in range(n):
-        if not centroids:
-            centroids.append(embeddings[i].copy())
-            counts.append(1)
-            cluster_ids[i] = 0
-            continue
-        sims = np.stack(centroids) @ embeddings[i]
-        order = np.argsort(sims)[::-1]
-        best, second = float(sims[order[0]]), (float(sims[order[1]]) if len(order) > 1 else -1.0)
-        if best >= ASSIGN_SIM:
-            assign(i, int(order[0]))
-        elif best < CREATE_SIM:
-            centroids.append(embeddings[i].copy())
-            counts.append(1)
-            cluster_ids[i] = len(centroids) - 1
-        # else: 弃权
+    while True:
+        idx = np.nonzero(alive)[0]
+        if len(idx) < 2:
+            break
+        sub = U[np.ix_(idx, idx)]
+        p = np.unravel_index(np.argmax(sub), sub.shape)
+        i, j = int(idx[p[0]]), int(idx[p[1]])
+        if float(U[i, j]) < MERGE_SIM:
+            break
+        # Lance-Williams 平均链接增量更新（精确，无需重算）
+        U[i, :] = (sizes[i] * U[i, :] + sizes[j] * U[j, :]) / (sizes[i] + sizes[j])
+        U[:, i] = U[i, :]
+        U[i, i] = -2.0
+        sizes[i] += sizes[j]
+        members[i] = members[i] + members[j]
+        members[j] = []
+        alive[j] = False
+        U[j, :] = -2.0
+        U[:, j] = -2.0
 
-    # ---- 阶段 2：复评弃权窗 ----
-    for i in range(n):
-        if cluster_ids[i] != -1 or not centroids:
-            continue
-        sims = np.stack(centroids) @ embeddings[i]
-        order = np.argsort(sims)[::-1]
-        best, second = float(sims[order[0]]), (float(sims[order[1]]) if len(order) > 1 else -1.0)
-        if best >= ASSIGN_SIM and (best - second) >= PASS2_MARGIN:
-            assign(i, int(order[0]))
-
-    # ---- 阶段 3：凝聚合并 ----
-    members: list[list[int]] = [[] for _ in range(len(centroids))]
-    for i, cid in enumerate(cluster_ids):
-        if cid >= 0:
-            members[cid].append(i)
-    members = _agglomerate(members, embeddings)
+    big = [m for m in members if len(m) >= MIN_CLUSTER_WINDOWS]
+    small = [m for m in members if 0 < len(m) < MIN_CLUSTER_WINDOWS]
 
     labels = [""] * n
-    for new_id, member in enumerate(members):
-        for i in member:
-            labels[i] = f"c{new_id}"
+    for cid, m in enumerate(big):
+        for i in m:
+            labels[i] = f"c{cid}"
+
+    if big and small:
+        cents = np.stack([embeddings[m].mean(axis=0) for m in big])
+        cents /= (np.linalg.norm(cents, axis=1, keepdims=True) + 1e-9)
+        for m in small:
+            for i in m:
+                sims = cents @ embeddings[i]
+                order = np.argsort(sims)[::-1]
+                best = float(sims[order[0]])
+                second = float(sims[order[1]]) if len(order) > 1 else -1.0
+                if best >= ASSIGN_SIM and (best - second) >= SMALL_MARGIN:
+                    labels[i] = f"c{int(order[0])}"
+    elif small:
+        # 只有小簇（如单窗会议）→ 保留第一个小簇避免全部弃权
+        labels[:] = ""
+        for i in small[0]:
+            labels[i] = "c0"
+
     return labels
-
-
-def _agglomerate(members: list[list[int]], embeddings: np.ndarray) -> list[list[int]]:
-    """平均链接凝聚合并：反复合并平均链接相似度 >= MERGE_SIM 的最相似簇对
-
-    质心均值作为平均链接的近似（各窗等权、L2 归一化向量均值后再归一化）。
-    """
-    members = [m for m in members if m]
-    def centroid_of(member: list[int]) -> np.ndarray:
-        c = embeddings[member].mean(axis=0)
-        norm = np.linalg.norm(c, 2)
-        return c / norm if norm > 0 else c
-
-    while len(members) > 1:
-        cents = np.stack([centroid_of(m) for m in members])
-        sims = cents @ cents.T
-        np.fill_diagonal(sims, -2.0)
-        i, j = np.unravel_index(np.argmax(sims), sims.shape)
-        if float(sims[i, j]) < MERGE_SIM:
-            break
-        members[min(i, j)] = members[i] + members[j]
-        members[max(i, j)] = []
-        members = [m for m in members if m]
-    return members
 
 
 # ==================== 落库 ====================
@@ -303,21 +289,26 @@ async def _apply_to_db(meeting_id: str, db, windows, window_labels: list[str]) -
     if not rows:
         return []
 
-    # 簇按"最早窗开始时间"排序 → Speaker A/B/C...
-    cluster_ids = sorted(set(window_labels), key=lambda c: _min_time(c, windows, window_labels))
+    # 簇按"最早窗开始时间"排序 → Speaker A/B/C...（弃权窗不参与命名与投票）
+    cluster_ids = sorted(
+        {l for l in set(window_labels) if l},
+        key=lambda c: _min_time(c, windows, window_labels),
+    )
     rename = {c: f"Speaker {chr(65 + k % 26)}" for k, c in enumerate(cluster_ids)}
 
     changed = 0
     for seg_id, old_speaker, seg_start, seg_end in rows:
         seg_start, seg_end = float(seg_start), float(seg_end)
-        # 与该段时间重叠的窗多数票（票权=重叠时长）
+        # 与该段时间重叠的窗多数票（票权=重叠时长；弃权窗不计票）
         votes: dict[str, float] = {}
         for (w_start, w_end), label in zip(windows, window_labels):
+            if not label:
+                continue
             overlap = min(seg_end, w_end) - max(seg_start, w_start)
             if overlap > 0:
                 votes[label] = votes.get(label, 0.0) + overlap
         if not votes:
-            continue  # 无覆盖窗（如极短段），保留在线识别标签
+            continue  # 无有效覆盖窗（如极短段），保留在线识别标签
         new_label = rename[max(votes, key=votes.get)]
         if old_speaker != new_label:
             await db.execute(
