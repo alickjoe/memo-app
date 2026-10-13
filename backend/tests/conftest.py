@@ -47,7 +47,8 @@ async def test_db(temp_data_dir):
             audio_path TEXT,
             duration_seconds INTEGER DEFAULT 0,
             created_at DATETIME,
-            status TEXT DEFAULT 'processing'
+            status TEXT DEFAULT 'processing',
+            error_message TEXT
         )
     """)
     await conn.execute("""
@@ -69,7 +70,8 @@ async def test_db(temp_data_dir):
             action_items TEXT,
             next_steps TEXT,
             raw_response TEXT,
-            generated_at DATETIME
+            generated_at DATETIME,
+            language TEXT
         )
     """)
     await conn.execute("""
