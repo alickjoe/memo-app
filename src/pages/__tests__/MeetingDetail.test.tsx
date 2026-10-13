@@ -346,4 +346,70 @@ describe('MeetingDetail Page', () => {
     expect(screen.getByText('First segment')).toBeInTheDocument()
     expect(screen.queryByText('First segment v2')).not.toBeInTheDocument()
   })
+  it('regenerate shows loading state then success when status flips to done', async () => {
+    vi.useFakeTimers()
+
+    mockFetchRoutes((url) => {
+      if (url.endsWith('/regenerate')) return { status: 'regenerating' }
+      return { meeting: { ...doneMeeting, status: 'done', error_message: null }, minutes, transcripts: v1Segments, transcript_versions: [1] }
+    })
+
+    renderMeeting()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const btn = screen.getByRole('button', { name: 'meeting.regenerate' })
+    expect(btn).toBeEnabled()
+
+    fireEvent.click(btn)
+    // 点击同步进入加载态（POST 尚未返回）：按钮文案切换且禁用。
+    // 按钮与 TaskStatusBar 都渲染 meeting.regenerating 文案，用 getByRole 精确锁定按钮
+    expect(screen.getByRole('button', { name: 'meeting.regenerating' })).toBeDisabled()
+
+    // POST 返回 → 乐观置 processing；200ms 后 loadMeeting 拉到 done → 成功提示 + 按钮恢复
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200)
+    })
+    expect(screen.getByText('meeting.regenerateDone')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'meeting.regenerate' })).toBeEnabled()
+    expect(screen.queryByText('meeting.regenerating')).not.toBeInTheDocument()
+  })
+
+  it('regenerate shows error banner with backend error_message on failure', async () => {
+    vi.useFakeTimers()
+    let postDone = false
+
+    mockFetchRoutes((url) => {
+      if (url.endsWith('/regenerate')) {
+        postDone = true
+        return { status: 'regenerating' }
+      }
+      if (postDone) {
+        return { meeting: { ...doneMeeting, status: 'error', error_message: 'api key invalid' }, minutes, transcripts: v1Segments, transcript_versions: [1] }
+      }
+      return { meeting: doneMeeting, minutes, transcripts: v1Segments, transcript_versions: [1] }
+    })
+
+    renderMeeting()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'meeting.regenerate' }))
+    expect(screen.getByRole('button', { name: 'meeting.regenerating' })).toBeDisabled()
+
+    // POST 返回 → loadMeeting 拉到 error 状态 → 失败横幅展示后端落库的具体原因
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200)
+    })
+    expect(screen.getByText(/meeting.regenerateFailed: api key invalid/)).toBeInTheDocument()
+    expect(screen.getByText('meeting.dismissError')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'meeting.regenerate' })).toBeEnabled()
+  })
 })

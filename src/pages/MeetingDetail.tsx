@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import MinutesPanel from '../components/MinutesPanel'
 import TranscriptStream from '../components/TranscriptStream'
+import TaskStatusBar from '../components/TaskStatusBar'
 import { useSettingsStore } from '../stores/settings'
 
 interface Meeting {
@@ -12,6 +13,7 @@ interface Meeting {
   duration_seconds: number
   created_at: string
   status: string
+  error_message?: string | null
 }
 
 interface Minutes {
@@ -19,6 +21,7 @@ interface Minutes {
   key_points: string[]
   action_items: string[]
   next_steps: string
+  language?: string | null
 }
 
 interface TranscriptSegment {
@@ -46,10 +49,17 @@ export default function MeetingDetail() {
   const [pendingRetranscribeVersion, setPendingRetranscribeVersion] = useState<number | null>(null)
   const [retranscribeError, setRetranscribeError] = useState(false)
   const [retranscribeErrorMessage, setRetranscribeErrorMessage] = useState('')
+  const [isRegenerating, setIsRegenerating] = useState(false)
+  const [regenerateDone, setRegenerateDone] = useState(false)
+  const [taskError, setTaskError] = useState<{ kind: 'regenerate' | 'retranscribe'; message: string } | null>(null)
+  const [retranscribeStage, setRetranscribeStage] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const retranscribePollRef = useRef<NodeJS.Timeout | null>(null)
   const manualVersionRef = useRef(false)
+  // 重新生成终态判定守卫：点击瞬间 meeting.status 还是旧终态（done/error），
+  // 乐观置 processing 发生在 POST 返回后；未观察到进行中状态前禁止终态判定
+  const regenPendingSeenRef = useRef(false)
 
   useEffect(() => {
     loadMeeting()
@@ -98,6 +108,20 @@ export default function MeetingDetail() {
           loadMeeting()
         } else if (data.type === 'diarization_degraded') {
           console.warn('[Memo] 声纹识别引擎不可用:', data.error)
+        } else if (data.type === 'retranscribe_stage') {
+          setRetranscribeStage(data.stage)
+        } else if (data.type === 'minutes_error') {
+          // 生成纪要失败（regenerate / retranscribe 共用终态事件）
+          if (isRegenerating) {
+            setIsRegenerating(false)
+            setTaskError({ kind: 'regenerate', message: localizeTaskError(data.message) || t('meeting.regenerateFailed') })
+          } else if (isRetranscribing) {
+            setIsRetranscribing(false)
+            setPendingRetranscribeVersion(null)
+            setRetranscribeError(true)
+            setRetranscribeErrorMessage(localizeTaskError(data.message) || t('meeting.retranscribeFailed'))
+            if (retranscribePollRef.current) { clearInterval(retranscribePollRef.current); retranscribePollRef.current = null }
+          }
         }
       }
       wsRef.current = ws
@@ -163,15 +187,80 @@ export default function MeetingDetail() {
     }
   }
 
+  // error_message 里的特殊标记 → 本地化文案；其余原样展示（后端写入的异常摘要）
+  const localizeTaskError = (raw?: string | null): string => {
+    if (!raw) return ''
+    if (raw === 'INTERRUPTED_BY_RESTART') return t('meeting.taskInterrupted')
+    return raw.length > 300 ? `${raw.slice(0, 300)}...` : raw
+  }
+
+  // 重转写阶段 → 横幅后缀（转写中 / 修正说话人标签 / 生成纪要中）
+  const stageSuffix = (): string => {
+    if (!retranscribeStage) return ''
+    const key = retranscribeStage === 'transcribing' ? 'meeting.stageTranscribing'
+      : retranscribeStage === 'reclustering' ? 'meeting.stageReclustering'
+        : 'meeting.stageMinutes'
+    return ` — ${t(key)}`
+  }
+
   const handleRegenerate = async () => {
+    if (isRegenerating || isRetranscribing) return
+    regenPendingSeenRef.current = false
+    setIsRegenerating(true)
+    setRegenerateDone(false)
+    setTaskError(null)
     try {
       const backendUrl = await window.electronAPI?.getBackendUrl()
-      await fetch(`${backendUrl}/api/meetings/${id}/regenerate`, { method: 'POST' })
-      setTimeout(loadMeeting, 2000)
+      const res = await fetch(`${backendUrl}/api/meetings/${id}/regenerate`, { method: 'POST' })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: '' }))
+        const msg: string = errData.error || ''
+        setTaskError({
+          kind: 'regenerate',
+          message: msg.includes('No transcript') ? t('meeting.regenerateNoTranscript') : (msg || t('meeting.regenerateFailed')),
+        })
+        setIsRegenerating(false)
+        return
+      }
+      // 乐观置 processing：详情页 WS 效应会立刻连接（收 minutes_ready/minutes_error），
+      // 既有 3 秒状态轮询作为 WS 失效时的兜底
+      setMeeting((prev) => (prev ? { ...prev, status: 'processing', error_message: null } : prev))
+      setTimeout(() => loadMeeting(), 200)
     } catch (err) {
       console.error('Failed to regenerate:', err)
+      setTaskError({ kind: 'regenerate', message: String(err) })
+      setIsRegenerating(false)
     }
   }
+
+  // 重新生成终态：跟随 meeting.status（WS minutes_ready / 轮询 / minutes_error 都汇聚到这里）
+  useEffect(() => {
+    if (!isRegenerating) return
+    if (meeting?.status === 'processing' || meeting?.status === 'recording') {
+      // 观察到进行中状态后，后续的 done/error 才是本次重新生成的真实终态
+      regenPendingSeenRef.current = true
+      return
+    }
+    // 点击瞬间 status 仍是旧终态（done/error），未见到 processing 前不触发终态，
+    // 避免点击瞬间把旧终态误判为本次结果（瞬间闪 done/旧错误横幅）
+    if (!regenPendingSeenRef.current) return
+    if (meeting?.status === 'done') {
+      setIsRegenerating(false)
+      setRegenerateDone(true)
+      setTaskError(null)
+      const timer = setTimeout(() => setRegenerateDone(false), 3000)
+      return () => clearTimeout(timer)
+    }
+    if (meeting?.status === 'error') {
+      setIsRegenerating(false)
+      setTaskError({
+        kind: 'regenerate',
+        message: localizeTaskError(meeting?.error_message) || t('meeting.regenerateFailed'),
+      })
+    }
+    // 重新生成终态：跟随 meeting.status（WS minutes_ready / 轮询 / minutes_error 都汇聚到这里）
+    // meeting/error_message 通过闭包读取；deps 只保留状态触发源
+  }, [isRegenerating, meeting?.status])
 
   const handleRetranscribe = async () => {
     if (!id || !window.confirm(t('meeting.confirmRetranscribe'))) return
@@ -206,12 +295,13 @@ export default function MeetingDetail() {
                 if (retranscribePollRef.current) { clearInterval(retranscribePollRef.current); retranscribePollRef.current = null }
                 return
               }
-              // 失败：状态变为 error
+              // 失败：状态变为 error（展示后端落库的具体原因）
               if (pollData.meeting.status === 'error') {
                 setIsRetranscribing(false)
                 setPendingRetranscribeVersion(null)
                 setRetranscribeError(true)
-                setRetranscribeErrorMessage(t('meeting.retranscribeFailed'))
+                const raw: string | null = pollData.meeting.error_message || null
+                setRetranscribeErrorMessage(localizeTaskError(raw) || t('meeting.retranscribeFailed'))
                 if (retranscribePollRef.current) { clearInterval(retranscribePollRef.current); retranscribePollRef.current = null }
                 return
               }
@@ -389,13 +479,14 @@ export default function MeetingDetail() {
         )}
         <button
           onClick={handleRegenerate}
-          className="px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50"
+          disabled={isRegenerating || isRetranscribing || meeting.status === 'processing' || meeting.status === 'recording'}
+          className="px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {t('meeting.regenerate')}
+          {isRegenerating ? t('meeting.regenerating') : t('meeting.regenerate')}
         </button>
         <button
           onClick={handleRetranscribe}
-          disabled={isRetranscribing || meeting.status === 'processing' || meeting.status === 'recording'}
+          disabled={isRetranscribing || isRegenerating || meeting.status === 'processing' || meeting.status === 'recording'}
           className="px-3 py-1.5 text-sm border border-primary-200 text-primary-600 rounded-md hover:bg-primary-50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isRetranscribing ? t('meeting.retranscribing') : t('meeting.retranscribe')}
@@ -420,17 +511,33 @@ export default function MeetingDetail() {
         </button>
       </div>
 
-      {/* 重转写状态提示栏 */}
-      {isRetranscribing && pendingRetranscribeVersion !== null && (
-        <div className="bg-blue-50 border-b border-blue-200 px-6 py-2.5 flex items-center gap-3">
-          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm text-blue-700 font-medium">
-            {t('meeting.retranscribingStatus')} (v{pendingRetranscribeVersion})
-          </span>
-          <span className="text-xs text-blue-500">
-            {t('meeting.retranscribeHint')}
-          </span>
+      {/* 任务进行中 / 结果反馈横幅 */}
+      {isRegenerating && (
+        <TaskStatusBar text={t('meeting.regenerating')} hint={t('meeting.retranscribeHint')} />
+      )}
+      {regenerateDone && (
+        <div className="bg-green-50 border-b border-green-200 px-6 py-2.5">
+          <span className="text-sm text-green-700 font-medium">{t('meeting.regenerateDone')}</span>
         </div>
+      )}
+      {taskError?.kind === 'regenerate' && (
+        <div className="bg-red-50 border-b border-red-200 px-6 py-2.5 flex items-center gap-3">
+          <span className="text-sm text-red-700">
+            {t('meeting.regenerateFailed')}{taskError.message ? `: ${taskError.message}` : ''}
+          </span>
+          <button
+            onClick={() => setTaskError(null)}
+            className="ml-auto text-xs text-red-500 hover:text-red-700 underline"
+          >
+            {t('meeting.dismissError')}
+          </button>
+        </div>
+      )}
+      {isRetranscribing && pendingRetranscribeVersion !== null && (
+        <TaskStatusBar
+          text={`${t('meeting.retranscribingStatus')} (v${pendingRetranscribeVersion})${stageSuffix()}`}
+          hint={t('meeting.retranscribeHint')}
+        />
       )}
       {retranscribeError && (
         <div className="bg-red-50 border-b border-red-200 px-6 py-2.5 flex items-center gap-3">

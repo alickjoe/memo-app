@@ -61,6 +61,9 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
+    # 启动看门狗：重置升级/崩溃重启遗留的 processing 会议
+    await _reset_stale_processing()
+
     audio_capture = AudioCapture()
     vad = VoiceActivityDetector()
     # Load Silero VAD model in background — first download can take 30s+
@@ -100,6 +103,22 @@ async def _ensure_voiceprint_ready():
         logger.info("Voiceprint engine self-healed: resemblyzer auto-installed")
     else:
         logger.warning("Voiceprint engine self-heal failed: %s", msg)
+
+
+async def _reset_stale_processing():
+    """启动看门狗：把遗留的 processing 会议置为 error（升级/崩溃重启后的任务无法续跑）。
+
+    覆盖重新生成纪要、重新转写、导入音频三类任务，防止前端永久转圈。
+    error_message 存标记常量，前端按界面语言渲染本地化文案。
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE meetings SET status = 'error', error_message = ? WHERE status = 'processing'",
+        ("INTERRUPTED_BY_RESTART",),
+    )
+    await db.commit()
+    if cursor.rowcount > 0:
+        logger.warning("Startup watchdog: reset %d stale processing meeting(s) to error", cursor.rowcount)
 
 app.add_middleware(
     CORSMiddleware,
@@ -293,14 +312,14 @@ async def switch_device(request: dict = None):
     device_id = request.get("device_id", "")
 
     if not audio_capture:
-        return {"error": "No active capture"}, 400
+        return JSONResponse(status_code=400, content={"error": "No active capture"})
 
     if device_type not in ("loopback", "input"):
-        return {"error": f"Invalid device_type: {device_type}"}, 400
+        return JSONResponse(status_code=400, content={"error": f"Invalid device_type: {device_type}"})
 
     success = audio_capture.switch_device(device_type, device_id)
     if not success:
-        return {"error": "Device not found or switch failed"}, 404
+        return JSONResponse(status_code=404, content={"error": "Device not found or switch failed"})
 
     return {
         "status": "switched",
@@ -337,12 +356,12 @@ async def get_meeting(meeting_id: str):
     """获取会议详情"""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id, title, audio_path, duration_seconds, created_at, status FROM meetings WHERE id = ?",
+        "SELECT id, title, audio_path, duration_seconds, created_at, status, error_message FROM meetings WHERE id = ?",
         (meeting_id,),
     )
     row = await cursor.fetchone()
     if not row:
-        return {"error": "Meeting not found"}, 404
+        return JSONResponse(status_code=404, content={"error": "Meeting not found"})
 
     meeting = {
         "id": row[0],
@@ -351,11 +370,12 @@ async def get_meeting(meeting_id: str):
         "duration_seconds": row[3] or 0,
         "created_at": row[4],
         "status": row[5],
+        "error_message": row[6],
     }
 
     # 获取纪要
     cursor = await db.execute(
-        "SELECT summary, key_points, action_items, next_steps FROM minutes WHERE meeting_id = ?",
+        "SELECT summary, key_points, action_items, next_steps, language FROM minutes WHERE meeting_id = ?",
         (meeting_id,),
     )
     min_row = await cursor.fetchone()
@@ -366,6 +386,7 @@ async def get_meeting(meeting_id: str):
             "key_points": json.loads(min_row[1]) if min_row[1] else [],
             "action_items": json.loads(min_row[2]) if min_row[2] else [],
             "next_steps": min_row[3] or "",
+            "language": min_row[4],
         }
 
     # 获取转写记录
@@ -430,7 +451,7 @@ async def update_meeting(meeting_id: str, request: dict):
     db = await get_db()
     title = request.get("title")
     if not title:
-        return {"error": "title is required"}, 400
+        return JSONResponse(status_code=400, content={"error": "title is required"})
 
     cursor = await db.execute(
         "UPDATE meetings SET title = ? WHERE id = ?",
@@ -438,7 +459,7 @@ async def update_meeting(meeting_id: str, request: dict):
     )
     await db.commit()
     if cursor.rowcount == 0:
-        return {"error": "Meeting not found"}, 404
+        return JSONResponse(status_code=404, content={"error": "Meeting not found"})
     return {"status": "updated", "title": title}
 
 
@@ -456,7 +477,14 @@ async def regenerate_minutes(meeting_id: str):
     transcript_text = "\n".join([f"[{row[0]}]: {row[1]}" for row in rows])
 
     if not transcript_text:
-        return {"error": "No transcript found"}, 404
+        return JSONResponse(status_code=404, content={"error": "No transcript found"})
+
+    # 置为 processing 并清空上次错误（前端据此显示进行中状态）
+    await db.execute(
+        "UPDATE meetings SET status = 'processing', error_message = NULL WHERE id = ?",
+        (meeting_id,),
+    )
+    await db.commit()
 
     # 重新生成
     asyncio.create_task(generate_minutes(meeting_id, transcript_text))
@@ -480,7 +508,7 @@ async def retranscribe_meeting(meeting_id: str):
     )
     row = await cursor.fetchone()
     if not row:
-        return {"error": "Meeting not found"}, 404
+        return JSONResponse(status_code=404, content={"error": "Meeting not found"})
 
     audio_path = row[0]
 
@@ -511,10 +539,13 @@ async def retranscribe_meeting(meeting_id: str):
                 await db.commit()
                 print(f"[RETRANSCRIBE] Fixed missing audio_path (glob): {audio_path}", flush=True)
             else:
-                return {"error": f"No audio file associated with this meeting (expected at {guessed_path})"}, 400
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"No audio file associated with this meeting (expected at {guessed_path})"},
+                )
 
     if not os.path.exists(audio_path):
-        return {"error": f"Audio file not found: {audio_path}"}, 404
+        return JSONResponse(status_code=404, content={"error": f"Audio file not found: {audio_path}"})
 
     # 确定新版本号
     cursor = await db.execute(
@@ -556,7 +587,7 @@ async def import_audio(request: dict):
     """导入音频文件"""
     file_path = request.get("file_path")
     if not file_path or not os.path.exists(file_path):
-        return {"error": "File not found"}, 404
+        return JSONResponse(status_code=404, content={"error": "File not found"})
 
     meeting_id = str(uuid.uuid4())
     db = await get_db()
@@ -1195,6 +1226,38 @@ def _run_retranscribe_sync(meeting_id: str, audio_path: str, version: int):
         print(f"[RETRANSCRIBE] sync wrapper CRASHED: {e}", flush=True)
         import traceback
         traceback.print_exc()
+        # 崩溃兜底：_do_retranscribe 的 except 可能没来得及执行（如事件循环启动失败），
+        # 此处用独立 sqlite3 连接标记 error，避免 status 永久停留 processing
+        try:
+            _mark_meeting_error_sync(meeting_id, str(e)[:500])
+        except Exception as db_err:
+            logger.error("Retranscribe crash fallback DB write failed: %s", db_err)
+
+
+def _mark_meeting_error_sync(meeting_id: str, error_message: str):
+    """线程上下文里用 sqlite3 直连标记会议失败（aiosqlite 全局连接绑定主事件循环，不可用）"""
+    import sqlite3
+
+    from storage.db import _db_path
+
+    conn = sqlite3.connect(_db_path())
+    try:
+        conn.execute(
+            "UPDATE meetings SET status = 'error', error_message = ? WHERE id = ?",
+            (error_message, meeting_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _push_retranscribe_stage(meeting_id: str, stage: str):
+    """推送重转写阶段事件（transcribing / reclustering / minutes）"""
+    for ws in ws_connections.get(meeting_id, []):
+        try:
+            await ws.send_json({"type": "retranscribe_stage", "stage": stage})
+        except Exception:
+            pass
 
 
 async def _do_retranscribe(meeting_id: str, audio_path: str, version: int):
@@ -1204,15 +1267,18 @@ async def _do_retranscribe(meeting_id: str, audio_path: str, version: int):
     db = await get_db()
 
     try:
+        await _push_retranscribe_stage(meeting_id, "transcribing")
         segments = await stt_engine.transcribe_file(audio_path)
 
         if not segments:
             logger.warning("Retranscribe produced no segments for meeting %s", meeting_id)
+            error_msg = "transcription produced no text (check STT settings and audio file)"
             await db.execute(
-                "UPDATE meetings SET status = ? WHERE id = ?",
-                ("error", meeting_id),
+                "UPDATE meetings SET status = 'error', error_message = ? WHERE id = ?",
+                (error_msg, meeting_id),
             )
             await db.commit()
+            await _push_minutes_error(meeting_id, error_msg)
             return
 
         # 存入新版本的转写段
@@ -1234,11 +1300,13 @@ async def _do_retranscribe(meeting_id: str, audio_path: str, version: int):
         # 会后重聚类：用全量录音修正新版本段的说话人标签
         speakers: list[str] = []
         if await _recluster_enabled():
+            await _push_retranscribe_stage(meeting_id, "reclustering")
             speakers = await recluster_meeting(meeting_id, db, diarizer, audio_path)
             if speakers:
                 await _push_speakers_updated(meeting_id, speakers)
 
         # 用新版本转写生成纪要（重聚类后从 DB 读取，带上真实说话人标签）
+        await _push_retranscribe_stage(meeting_id, "minutes")
         cursor = await db.execute(
             "SELECT speaker, text FROM transcript_segments "
             "WHERE meeting_id = ? AND version = ? ORDER BY start_time",
@@ -1250,8 +1318,8 @@ async def _do_retranscribe(meeting_id: str, audio_path: str, version: int):
 
         # 更新状态
         await db.execute(
-            "UPDATE meetings SET status = ? WHERE id = ?",
-            ("done", meeting_id),
+            "UPDATE meetings SET status = 'done', error_message = NULL WHERE id = ?",
+            (meeting_id,),
         )
         await db.commit()
 
@@ -1268,11 +1336,22 @@ async def _do_retranscribe(meeting_id: str, audio_path: str, version: int):
 
     except Exception as e:
         logger.exception("Retranscribe error for meeting %s: %s", meeting_id, e)
+        error_msg = str(e)[:500]
         await db.execute(
-            "UPDATE meetings SET status = ? WHERE id = ?",
-            ("error", meeting_id),
+            "UPDATE meetings SET status = 'error', error_message = ? WHERE id = ?",
+            (error_msg, meeting_id),
         )
         await db.commit()
+        await _push_minutes_error(meeting_id, error_msg)
+
+
+async def _push_minutes_error(meeting_id: str, message: str):
+    """推送任务失败事件（重转写/重新生成共用，前端横幅展示具体原因）"""
+    for ws in ws_connections.get(meeting_id, []):
+        try:
+            await ws.send_json({"type": "minutes_error", "message": message})
+        except Exception:
+            pass
 
 
 async def process_imported_audio(meeting_id: str, file_path: str):
@@ -1352,10 +1431,10 @@ async def generate_minutes(meeting_id: str, transcript_text: str):
     try:
         minutes_data = await summarizer.summarize(transcript_text)
 
-        # 存储纪要
+        # 存储纪要（language 记录本次生成使用的输出语言，前端标题按它渲染）
         await db.execute(
-            """INSERT OR REPLACE INTO minutes (meeting_id, summary, key_points, action_items, next_steps, raw_response, generated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT OR REPLACE INTO minutes (meeting_id, summary, key_points, action_items, next_steps, raw_response, generated_at, language)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 meeting_id,
                 minutes_data.get("summary", ""),
@@ -1364,6 +1443,7 @@ async def generate_minutes(meeting_id: str, transcript_text: str):
                 minutes_data.get("next_steps", ""),
                 minutes_data.get("raw_response", ""),
                 datetime.now().isoformat(),
+                getattr(summarizer, "output_language", None),
             ),
         )
         await db.commit()
@@ -1384,8 +1464,8 @@ async def generate_minutes(meeting_id: str, transcript_text: str):
 
         # 标题生成完毕后再设 done，避免前端轮询提前检测到 done 而错过标题更新
         await db.execute(
-            "UPDATE meetings SET status = ? WHERE id = ?",
-            ("done", meeting_id),
+            "UPDATE meetings SET status = 'done', error_message = NULL WHERE id = ?",
+            (meeting_id,),
         )
         await db.commit()
 
@@ -1398,11 +1478,14 @@ async def generate_minutes(meeting_id: str, transcript_text: str):
 
     except Exception as e:
         logger.error(f"Minutes generation error: {e}")
+        error_msg = str(e)[:500]
         await db.execute(
-            "UPDATE meetings SET status = ? WHERE id = ?",
-            ("error", meeting_id),
+            "UPDATE meetings SET status = 'error', error_message = ? WHERE id = ?",
+            (error_msg, meeting_id),
         )
         await db.commit()
+        # 失败原因推给前端（regenerate 时无 WS 连接则由轮询兜底读取 error_message）
+        await _push_minutes_error(meeting_id, error_msg)
 
 
 # ==================== Entry Point ====================
