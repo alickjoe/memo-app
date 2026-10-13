@@ -111,6 +111,7 @@ idle → (点击) generating → done（短暂提示后消失）/ failed（横�
 - 点击时检查 `res.ok`（404 → 横幅"没有可用的转写文本"）
 - 生成中显示反馈横幅：spinner + 阶段文字 + **已耗时 ticker**（每秒更新，用户能看到"活着"）
 - 终态判定三通道（任一先到）：WS `minutes_ready` / WS `minutes_error` / 轮询到 status=done|error（沿用现有 2s 轮询模式，失败时从 GET 响应读 `error_message` 展示具体原因）
+- 终态判定竞态守卫：点击瞬间 `meeting.status` 仍是旧终态（done/error），乐观置 processing 发生在 POST 返回后；终态 effect 用 `regenPendingSeenRef` 守卫——未观察到 processing/recording 前不触发终态，避免点击瞬间闪现"已更新"绿条或旧错误横幅（实现期回归测试暴露的缺陷）
 - 成功时短暂显示"纪要已更新"2 秒后自动消失；失败横幅常驻可手动关闭
 - 与 retranscribe 互斥：两者任一进行中，另一按钮禁用
 - 会议处于 recording/processing 状态时禁用重新生成（防止对不完整转写生成纪要）
