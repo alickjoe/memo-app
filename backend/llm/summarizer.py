@@ -24,6 +24,10 @@ logger = logging.getLogger("memo.llm")
 # 纪要生成输出 token 上限：2000 时长会议的整合纪要 JSON 会被截断成非法 JSON（v1.3.4 修复）
 MINUTES_MAX_TOKENS = 4000
 
+# 分段摘要输出上限：500 对推理型模型不够（reasoning 吃光预算 → content 为空），
+# 导致长会议全部分段失败（v1.3.5 修复）
+CHUNK_SUMMARY_MAX_TOKENS = 1200
+
 
 class LLMSummarizer:
     """云端 LLM 纪要生成器"""
@@ -132,19 +136,12 @@ class LLMSummarizer:
                 raise ValueError(f"LLM API error {response.status_code}: {response.text[:200]}")
 
     async def _summarize_long_text(self, text: str) -> dict:
-        """超长文本分段处理"""
-        # 分段：每段约 6000 字符
-        chunk_size = 6000
-        chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-
-        # 限制最多处理 8 段
-        if len(chunks) > 8:
-            chunks = chunks[:8]
-
+        """超长文本分段处理：逐段摘要后整合；全部分段失败时降级为单次直连生成"""
+        chunks = self._split_chunks(text)
         is_en = self.output_language == "en"
 
         # 逐段摘要
-        summaries = []
+        summaries: list[str] = []
         for i, chunk in enumerate(chunks):
             if is_en:
                 prompt = f"""Please generate a brief summary for this meeting transcript segment (segment {i+1}/{len(chunks)}):
@@ -161,6 +158,8 @@ Summarize the key points of this segment in 2-3 sentences."""
             result = await self._call_llm_for_chunk(prompt)
             if result:
                 summaries.append(result)
+            else:
+                logger.warning("Chunk %s/%s summary failed, continuing", i + 1, len(chunks))
 
         # 汇总所有摘要
         if summaries:
@@ -175,7 +174,55 @@ Summarize the key points of this segment in 2-3 sentences."""
 {combined}"""
             return await self._call_llm(final_prompt)
 
-        raise ValueError("LLM produced no segment summaries for long transcript")
+        # 全部分段失败（常见：推理型模型把分段 token 预算吃光 → content 为空）：
+        # 降级为「截断转写后单次直连生成」，避免整个纪要直接失败
+        logger.warning(
+            "All %s chunk summaries failed; falling back to single-pass generation on truncated transcript",
+            len(chunks),
+        )
+        return await self._call_llm(self._truncate_for_single_call(text))
+
+    @staticmethod
+    def _split_chunks(text: str, chunk_size: int = 6000, max_chunks: int = 8) -> list[str]:
+        """按行边界切分转写，避免把句子/发言腰斩；超长单行兜底硬切。
+
+        超过 max_chunks 的尾部会丢弃并告警（受模型上下文与耗时限制）。
+        """
+        chunks: list[str] = []
+        current = ""
+        for line in text.splitlines(keepends=True):
+            if current and len(current) + len(line) > chunk_size:
+                chunks.append(current)
+                current = line
+            else:
+                current += line
+        if current:
+            chunks.append(current)
+
+        # 超长单行（或极长无换行文本）兜底硬切
+        out: list[str] = []
+        for chunk in chunks:
+            if len(chunk) <= chunk_size:
+                out.append(chunk)
+            else:
+                out.extend(chunk[i:i + chunk_size] for i in range(0, len(chunk), chunk_size))
+
+        if len(out) > max_chunks:
+            logger.warning(
+                "Transcript too long: using first %s chunks, %s trailing chunks omitted",
+                max_chunks,
+                len(out) - max_chunks,
+            )
+            out = out[:max_chunks]
+        return out
+
+    @staticmethod
+    def _truncate_for_single_call(text: str, head: int = 8000, tail: int = 3000) -> str:
+        """单次直连兜底的转写截断：保留开头（会议背景/议程）与结尾（结论/行动项）"""
+        if len(text) <= head + tail:
+            return text
+        omitted = len(text) - head - tail
+        return f"{text[:head]}\n\n...（中间 {omitted} 字符已省略）...\n\n{text[-tail:]}"
 
     def _get_system_prompt(self) -> str:
         """根据输出语言选择对应的 system prompt"""
@@ -190,7 +237,7 @@ Summarize the key points of this segment in 2-3 sentences."""
         return f"请为以下会议生成纪要：\n\n{text}"
 
     async def _call_llm_for_chunk(self, prompt: str) -> str | None:
-        """针对单个片段调用 LLM"""
+        """针对单个片段调用 LLM；失败返回 None（由调用方决定是否降级）"""
         try:
             async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
                 response = await client.post(
@@ -205,12 +252,30 @@ Summarize the key points of this segment in 2-3 sentences."""
                             {"role": "user", "content": prompt},
                         ],
                         "temperature": 0.3,
-                        "max_tokens": 500,
+                        "max_tokens": CHUNK_SUMMARY_MAX_TOKENS,
                     },
                 )
-                if response.status_code == 200:
-                    data = response.json()
-                    return data["choices"][0]["message"]["content"]
+                if response.status_code != 200:
+                    logger.warning(
+                        "Chunk LLM API error: %s - %s", response.status_code, response.text[:300]
+                    )
+                    return None
+                data = response.json()
+                try:
+                    choice = data["choices"][0]
+                    content = choice.get("message", {}).get("content")
+                    finish_reason = choice.get("finish_reason")
+                except (KeyError, IndexError, TypeError):
+                    logger.warning("Chunk LLM unexpected response structure: %s", str(data)[:200])
+                    return None
+                if not content:
+                    logger.warning(
+                        "Chunk LLM returned empty content (finish_reason=%s) — "
+                        "推理型模型可能把 max_tokens 预算耗尽，可提高 CHUNK_SUMMARY_MAX_TOKENS",
+                        finish_reason,
+                    )
+                    return None
+                return content
         except Exception as e:
             logger.error(f"Chunk LLM error: {e}")
         return None
