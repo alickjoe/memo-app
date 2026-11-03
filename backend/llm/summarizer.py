@@ -28,6 +28,11 @@ MINUTES_MAX_TOKENS = 4000
 # 导致长会议全部分段失败（v1.3.5 修复；glm-5.3-flash 经 OpenRouter 实测 500 必空）
 CHUNK_SUMMARY_MAX_TOKENS = 2000
 
+# 分段摘要重试上限：推理型模型的 reasoning token 数逐段波动（实测同一会议 75~910），
+# 个别段落会超出 2000。单段超预算时用该上限重试一次，避免整场会议退化成截断兜底
+# （截断只保留首尾约 1/3 内容，长会议会丢大量议题）
+CHUNK_SUMMARY_RETRY_MAX_TOKENS = 4000
+
 # 标题生成输出上限：同样会被 reasoning 吃光（500 → content 空、finish_reason=length），
 # 表现是会议标题一直是 Untitled Meeting（v1.3.5 修复）
 TITLE_MAX_TOKENS = 2000
@@ -144,9 +149,11 @@ class LLMSummarizer:
         chunks = self._split_chunks(text)
         is_en = self.output_language == "en"
 
-        # 逐段摘要
+        # 逐段摘要。个别分段推理超预算时先加预算重试一次，
+        # 只有「连续多段都救不回来」才放弃分段（说明是系统性预算不足，重试无意义）
         summaries: list[str] = []
-        aborted = False
+        failed_chunks = 0
+        consecutive_failures = 0
         for i, chunk in enumerate(chunks):
             if is_en:
                 prompt = f"""Please generate a brief summary for this meeting transcript segment (segment {i+1}/{len(chunks)}):
@@ -161,22 +168,51 @@ Summarize the key points of this segment in 2-3 sentences."""
 
 请用 2-3 句话概括本片段的要点。"""
             result, failure = await self._call_llm_for_chunk(prompt)
+            if not result and failure == "reasoning_budget":
+                logger.warning(
+                    "Chunk %s/%s exhausted max_tokens=%s on reasoning; retrying at max_tokens=%s",
+                    i + 1,
+                    len(chunks),
+                    CHUNK_SUMMARY_MAX_TOKENS,
+                    CHUNK_SUMMARY_RETRY_MAX_TOKENS,
+                )
+                result, failure = await self._call_llm_for_chunk(
+                    prompt, CHUNK_SUMMARY_RETRY_MAX_TOKENS
+                )
+                if result:
+                    logger.info(
+                        "Chunk %s/%s recovered on retry (max_tokens=%s)",
+                        i + 1,
+                        len(chunks),
+                        CHUNK_SUMMARY_RETRY_MAX_TOKENS,
+                    )
             if result:
                 summaries.append(result)
+                consecutive_failures = 0
                 continue
+
+            failed_chunks += 1
+            consecutive_failures += 1
             logger.warning("Chunk %s/%s summary failed (%s), continuing", i + 1, len(chunks), failure)
-            if failure == "reasoning_budget":
-                # 推理预算耗尽：其余分段只会同样失败、且每次耗时数十秒 → 直接降级单次直连
+            if consecutive_failures >= 2:
                 logger.warning(
-                    "Chunk %s/%s exhausted reasoning budget; abandoning chunking for single-pass fallback",
+                    "%s consecutive chunks failed even after budget retry; abandoning chunking "
+                    "for single-pass fallback at chunk %s/%s",
+                    consecutive_failures,
                     i + 1,
                     len(chunks),
                 )
-                aborted = True
                 break
 
-        # 汇总所有摘要（未被推理预算中断时）
-        if summaries and not aborted:
+        # 用已成功的摘要整合（部分分段失败时仍能覆盖大部分会议内容，优于截断兜底）
+        if summaries:
+            if failed_chunks:
+                logger.warning(
+                    "Consolidating %s/%s chunk summaries (%s chunks failed); coverage may be partial",
+                    len(summaries),
+                    len(chunks),
+                    failed_chunks,
+                )
             combined = "\n\n---\n\n".join(summaries)
             if is_en:
                 final_prompt = f"""Below are summaries of each segment of the meeting. Please consolidate them into a complete meeting minutes:
@@ -188,7 +224,7 @@ Summarize the key points of this segment in 2-3 sentences."""
 {combined}"""
             return await self._call_llm(final_prompt)
 
-        # 全部分段失败 / 推理预算耗尽：降级为「截断转写后单次直连生成」，避免纪要直接失败
+        # 全部分段失败：降级为「截断转写后单次直连生成」，避免纪要直接失败
         logger.warning(
             "Falling back to single-pass generation on truncated transcript (%s chunks, %s summaries)",
             len(chunks),
@@ -250,14 +286,21 @@ Summarize the key points of this segment in 2-3 sentences."""
             return f"Please generate minutes for the following meeting:\n\n{text}"
         return f"请为以下会议生成纪要：\n\n{text}"
 
-    async def _call_llm_for_chunk(self, prompt: str) -> tuple[str | None, str | None]:
+    async def _call_llm_for_chunk(
+        self, prompt: str, max_tokens: int | None = None
+    ) -> tuple[str | None, str | None]:
         """针对单个片段调用 LLM。
+
+        max_tokens 可覆盖，用于推理预算耗尽后的加预算重试；
+        缺省值在调用时读取模块常量（不写成默认参数，避免定义时求值导致运行期改动无效）。
 
         返回 (content, failure_kind)：
         - 成功：(文本, None)
         - 推理预算耗尽（reasoning 吃光 max_tokens）：(None, 'reasoning_budget')
         - 其他失败：(None, 'http_error' | 'empty' | 'exception')
         """
+        if max_tokens is None:
+            max_tokens = CHUNK_SUMMARY_MAX_TOKENS
         try:
             async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
                 response = await client.post(
@@ -272,7 +315,7 @@ Summarize the key points of this segment in 2-3 sentences."""
                             {"role": "user", "content": prompt},
                         ],
                         "temperature": 0.3,
-                        "max_tokens": CHUNK_SUMMARY_MAX_TOKENS,
+                        "max_tokens": max_tokens,
                     },
                 )
                 if response.status_code != 200:
@@ -294,7 +337,7 @@ Summarize the key points of this segment in 2-3 sentences."""
                     logger.warning(
                         "Chunk LLM returned empty content (finish_reason=length) — "
                         "推理型模型耗尽了 max_tokens=%s 预算",
-                        CHUNK_SUMMARY_MAX_TOKENS,
+                        max_tokens,
                     )
                     return None, "reasoning_budget"
                 logger.warning("Chunk LLM returned empty content (finish_reason=%s)", finish_reason)
