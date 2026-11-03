@@ -4,7 +4,7 @@
 修复背景：分段调用 max_tokens=500 对推理型模型不够 → content 为空 → 全部分段失败，
 长会议纪要生成反复报 "LLM produced no segment summaries for long transcript"。
 """
-from llm.summarizer import CHUNK_SUMMARY_MAX_TOKENS, LLMSummarizer
+from llm.summarizer import CHUNK_SUMMARY_MAX_TOKENS, TITLE_MAX_TOKENS, LLMSummarizer
 
 
 def _long_text(lines: int = 400) -> str:
@@ -12,8 +12,10 @@ def _long_text(lines: int = 400) -> str:
 
 
 async def test_chunk_max_tokens_raised():
-    # 500 时代推理型模型分段必然空 content
-    assert CHUNK_SUMMARY_MAX_TOKENS >= 1000
+    # 500 时代推理型模型分段必然空 content（实测 glm-5.3-flash）
+    assert CHUNK_SUMMARY_MAX_TOKENS >= 1500
+    # 标题生成同样被 reasoning 吃光预算（finish_reason=length → Untitled Meeting）
+    assert TITLE_MAX_TOKENS >= 1500
 
 
 def test_split_chunks_respects_line_boundaries():
@@ -58,7 +60,7 @@ async def test_all_chunks_failing_falls_back_to_single_pass(monkeypatch):
     s.output_language = "zh"
 
     async def no_chunk(_prompt):
-        return None
+        return None, "empty"
 
     calls: list[str] = []
 
@@ -91,7 +93,7 @@ async def test_partial_chunk_failure_still_consolidates(monkeypatch):
     s.output_language = "zh"
 
     async def flaky_chunk(prompt):
-        return None if "第 1 段" in prompt else "片段摘要"
+        return (None, "empty") if "第 1 段" in prompt else ("片段摘要", None)
 
     calls: list[str] = []
 
@@ -114,3 +116,40 @@ async def test_partial_chunk_failure_still_consolidates(monkeypatch):
     # 走的是摘要汇总路径，且包含成功片段的摘要
     assert "摘要汇总" in calls[0]
     assert "片段摘要" in calls[0]
+
+
+async def test_reasoning_budget_aborts_chunking_immediately(monkeypatch):
+    """推理预算耗尽（finish_reason=length + 空 content）→ 不跑完剩余分段，直接单次兜底"""
+    s = LLMSummarizer()
+    s.api_key = "test-key"
+    s.output_language = "zh"
+
+    chunk_calls: list[str] = []
+
+    async def reasoning_exhausted(prompt):
+        chunk_calls.append(prompt)
+        return None, "reasoning_budget"
+
+    calls: list[str] = []
+
+    async def fake_call_llm(prompt):
+        calls.append(prompt)
+        return {
+            "summary": "ok",
+            "key_points": [],
+            "action_items": [],
+            "next_steps": "",
+            "raw_response": "",
+        }
+
+    monkeypatch.setattr(s, "_call_llm_for_chunk", reasoning_exhausted)
+    monkeypatch.setattr(s, "_call_llm", fake_call_llm)
+
+    text = _long_text()
+    result = await s._summarize_long_text(text)
+    assert result["summary"] == "ok"
+    # 只尝试了第 1 段就放弃分段（不再逐段浪费数十秒）
+    assert len(chunk_calls) == 1
+    assert len(calls) == 1
+    # 兜底路径：截断转写单次直连
+    assert "已省略" in calls[0]
