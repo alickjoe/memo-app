@@ -1,10 +1,17 @@
 """
-长文本分段摘要 + 单次直连兜底测试（v1.3.5）
+长文本分段摘要 + 单次直连兜底测试（v1.3.5 / v1.3.6）
 
 修复背景：分段调用 max_tokens=500 对推理型模型不够 → content 为空 → 全部分段失败，
 长会议纪要生成反复报 "LLM produced no segment summaries for long transcript"。
+v1.3.6 追加：单段推理超预算时加倍预算重试一次，只有连续多段救不回来才降级，
+避免「个别段落抖动 → 整场会议退化成首尾截断」丢内容。
 """
-from llm.summarizer import CHUNK_SUMMARY_MAX_TOKENS, TITLE_MAX_TOKENS, LLMSummarizer
+from llm.summarizer import (
+    CHUNK_SUMMARY_MAX_TOKENS,
+    CHUNK_SUMMARY_RETRY_MAX_TOKENS,
+    TITLE_MAX_TOKENS,
+    LLMSummarizer,
+)
 
 
 def _long_text(lines: int = 400) -> str:
@@ -14,6 +21,8 @@ def _long_text(lines: int = 400) -> str:
 async def test_chunk_max_tokens_raised():
     # 500 时代推理型模型分段必然空 content（实测 glm-5.3-flash）
     assert CHUNK_SUMMARY_MAX_TOKENS >= 1500
+    # 重试预算必须高于基础预算，否则重试无意义
+    assert CHUNK_SUMMARY_RETRY_MAX_TOKENS > CHUNK_SUMMARY_MAX_TOKENS
     # 标题生成同样被 reasoning 吃光预算（finish_reason=length → Untitled Meeting）
     assert TITLE_MAX_TOKENS >= 1500
 
@@ -118,16 +127,55 @@ async def test_partial_chunk_failure_still_consolidates(monkeypatch):
     assert "片段摘要" in calls[0]
 
 
-async def test_reasoning_budget_aborts_chunking_immediately(monkeypatch):
-    """推理预算耗尽（finish_reason=length + 空 content）→ 不跑完剩余分段，直接单次兜底"""
+async def test_reasoning_budget_retries_with_larger_budget(monkeypatch):
+    """单段推理超预算 → 用更大预算重试一次成功，不走截断兜底（v1.3.6 关键行为）"""
     s = LLMSummarizer()
     s.api_key = "test-key"
     s.output_language = "zh"
 
-    chunk_calls: list[str] = []
+    budgets: list[int] = []
 
-    async def reasoning_exhausted(prompt):
-        chunk_calls.append(prompt)
+    async def flaky_budget(_prompt, max_tokens=None):
+        effective = max_tokens or CHUNK_SUMMARY_MAX_TOKENS
+        budgets.append(effective)
+        if effective == CHUNK_SUMMARY_MAX_TOKENS:
+            return None, "reasoning_budget"
+        return "片段摘要", None
+
+    calls: list[str] = []
+
+    async def fake_call_llm(prompt):
+        calls.append(prompt)
+        return {
+            "summary": "ok",
+            "key_points": [],
+            "action_items": [],
+            "next_steps": "",
+            "raw_response": "",
+        }
+
+    monkeypatch.setattr(s, "_call_llm_for_chunk", flaky_budget)
+    monkeypatch.setattr(s, "_call_llm", fake_call_llm)
+
+    result = await s._summarize_long_text(_long_text())
+    assert result["summary"] == "ok"
+    # 每段都是「基础预算失败 → 大预算成功」，且没有退化成截断兜底
+    assert budgets[0] == CHUNK_SUMMARY_MAX_TOKENS
+    assert budgets[1] == CHUNK_SUMMARY_RETRY_MAX_TOKENS
+    assert "摘要汇总" in calls[0]
+    assert "已省略" not in calls[0]
+
+
+async def test_reasoning_budget_aborts_after_consecutive_failures(monkeypatch):
+    """连续两段即使加倍预算也失败 → 判定系统性预算不足，放弃分段转单次兜底"""
+    s = LLMSummarizer()
+    s.api_key = "test-key"
+    s.output_language = "zh"
+
+    chunk_calls: list[int] = []
+
+    async def reasoning_exhausted(_prompt, max_tokens=None):
+        chunk_calls.append(max_tokens or CHUNK_SUMMARY_MAX_TOKENS)
         return None, "reasoning_budget"
 
     calls: list[str] = []
@@ -145,11 +193,15 @@ async def test_reasoning_budget_aborts_chunking_immediately(monkeypatch):
     monkeypatch.setattr(s, "_call_llm_for_chunk", reasoning_exhausted)
     monkeypatch.setattr(s, "_call_llm", fake_call_llm)
 
-    text = _long_text()
-    result = await s._summarize_long_text(text)
+    result = await s._summarize_long_text(_long_text())
     assert result["summary"] == "ok"
-    # 只尝试了第 1 段就放弃分段（不再逐段浪费数十秒）
-    assert len(chunk_calls) == 1
+    # 第 1 段：基础 + 重试；第 2 段：基础 + 重试 → 共 4 次后放弃，不再跑第 3 段
+    assert chunk_calls == [
+        CHUNK_SUMMARY_MAX_TOKENS,
+        CHUNK_SUMMARY_RETRY_MAX_TOKENS,
+        CHUNK_SUMMARY_MAX_TOKENS,
+        CHUNK_SUMMARY_RETRY_MAX_TOKENS,
+    ]
     assert len(calls) == 1
     # 兜底路径：截断转写单次直连
     assert "已省略" in calls[0]
